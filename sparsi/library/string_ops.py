@@ -153,8 +153,10 @@ class StringLookupOp(Operator, BaseModel):
             self.entries = raw
 
     async def run(self, ctx: Any) -> None:
-        if self.key:
-            self.result = self.entries.get(self.key, "")
+        if self.key is not None:
+            # Coerce to string to match JSON keys
+            k = str(self.key)
+            self.result = self.entries.get(k, "")
 
 # Cast operators
 @register_operator("IntToStringOp")

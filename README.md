@@ -78,6 +78,8 @@ Discover what you can build with Sparsi:
 | [**HN Topic Brief**](./examples/hn_topic_brief.py) | API integration with parallel relevance filtering. |
 | [**README Quality**](./examples/readme_quality.py) | Automated code review with concurrent AI probes. |
 | [**Stock Analyzer**](./examples/stock_analyzer.py) | Parallel data fetching and sentiment analysis. |
+| [**Smart Doc Assistant**](./examples/smart_doc_assistant.py) | Advanced RAG with filtering, reranking, and citation validation. |
+| [**Repair JSON**](./examples/repair_json.py) | AI-driven automatic correction of malformed JSON. |
 
 ---
 
@@ -85,5 +87,6 @@ Discover what you can build with Sparsi:
 
 - [**Core Concepts**](./docs/concepts.md) — DAGs, Ops, and the Engine.
 - [**Operator Library**](./docs/operators.md) — Exhaustive list of all built-in operators.
+- [**Python API Reference**](./docs/python-api.md) — How to implement operators and build graphs.
 - [**Writing Workflows**](./docs/writing-workflows.md) — AI ops, Conditionals, and Map nodes.
 - [**MCP Integration**](./docs/mcp.md) — Hosting your workflows as MCP servers.

@@ -119,3 +119,83 @@ async def test_reporter_and_run_id():
     args, kwargs = mock_logger.info.call_args_list[0]
     assert args[0] == "engine.started"
     assert kwargs["run_id"] == rid
+
+def test_cycle_detection():
+    b = Builder("cycle")
+    # Vertex A depends on B, B depends on A
+    b.vertex("A").op("ContextValOp").input("val", "wire_b").output("result", "wire_a")
+    b.vertex("B").op("ContextValOp").input("val", "wire_a").output("result", "wire_b")
+    
+    with pytest.raises(ValueError) as excinfo:
+        b.build()
+    
+    assert "cycle" in str(excinfo.value)
+
+@pytest.mark.asyncio
+async def test_coalesce_n_dynamic():
+    b = Builder("coalesce_n")
+    # Test dynamic Input0, Input1... assignment
+    # We'll use ContextValOp to inject values into Input0 and Input1
+    b.vertex("in0").op("ContextValOp").params({"key": "v0"}).output("result", "wire0")
+    b.vertex("in1").op("ContextValOp").params({"key": "v1"}).output("result", "wire1")
+    
+    # CoalesceNStringOp uses model_config extra="allow"
+    b.vertex("coal").op("CoalesceNStringOp").params({"n": 2})\
+        .input("Input0", "wire0")\
+        .input("Input1", "wire1")\
+        .output("result", "final")
+    
+    graph = b.build()
+    engine = Engine(graph)
+    
+    # Input0 is None, Input1 should be picked
+    await engine.run({"v0": None, "v1": "hello"})
+    res, _ = engine.get_output("final")
+    assert res == "hello"
+    
+    # Input0 is set, should be picked
+    await engine.run({"v0": "first", "v1": "second"})
+    res, _ = engine.get_output("final")
+    assert res == "first"
+
+@pytest.mark.asyncio
+async def test_vertex_failure_no_deadlock():
+    @register_operator("FailOp")
+    class FailOp(Operator, BaseModel):
+        async def run(self, ctx: Any) -> None:
+            raise RuntimeError("intentional failure")
+            
+    b = Builder("fail_test")
+    b.vertex("f").op("FailOp").output("result", "fail_wire")
+    b.vertex("down").op("AddOp").input("a", "fail_wire").output("sum", "out")
+    
+    graph = b.build()
+    engine = Engine(graph)
+    
+    # Should not hang, but engine.run will raise the exception
+    with pytest.raises(RuntimeError) as excinfo:
+        await engine.run({})
+    
+    assert "intentional failure" in str(excinfo.value)
+    
+    # We don't strictly assert if 'down' was skipped or run, 
+    # as gather() cancellation timing can vary.
+    # The key is that we reached this point without hanging.
+
+@pytest.mark.asyncio
+async def test_predicate_ops():
+    b = Builder("pred_ops")
+    b.vertex("in").op("ContextValOp").params({"key": "val"}).output("result", "data")
+    b.vertex("empty").op("PredicateIfEmptyOp").input("val", "data").output("result", "is_empty")
+    b.vertex("not_empty").op("PredicateIfNotEmptyOp").input("val", "data").output("result", "is_not_empty")
+    
+    graph = b.build()
+    engine = Engine(graph)
+    
+    await engine.run({"val": ""})
+    assert engine.get_output("is_empty")[0] is True
+    assert engine.get_output("is_not_empty")[0] is False
+    
+    await engine.run({"val": "content"})
+    assert engine.get_output("is_empty")[0] is False
+    assert engine.get_output("is_not_empty")[0] is True

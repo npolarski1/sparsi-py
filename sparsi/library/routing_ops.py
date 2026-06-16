@@ -61,7 +61,7 @@ class ModeSelectOp(Operator, BaseModel):
                 if self.provider == "claude" or "claude" in self.model:
                     res_text = await self._call_anthropic(system_text, prompt)
                 else:
-                    res_text = await self._call_gemini(system_text, prompt)
+                    res_text = await self._run_gemini(system_text, prompt)
                 
                 result = res_text.strip()
                 if result in cat_set:
@@ -87,8 +87,13 @@ class ModeSelectOp(Operator, BaseModel):
         )
         return response.content[0].text
 
-    async def _call_gemini(self, system: str, prompt: str) -> str:
-        client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+    async def _run_gemini(self, system: str, prompt: str):
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+
+        client = genai.Client(api_key=api_key)
+
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=64,

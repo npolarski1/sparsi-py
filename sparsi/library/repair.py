@@ -7,12 +7,7 @@ from .ai_ops import AIComputeOp
 
 logger = structlog.get_logger(__name__)
 
-class ErrRepairable(Exception):
-    """Exception raised by operators to request an AI-driven repair of their input."""
-    def __init__(self, prompt: str, cause: Optional[Exception] = None):
-        self.prompt = prompt
-        self.cause = cause
-        super().__init__(prompt)
+from .repair_base import ErrRepairable
 
 @register_operator("WithRepair")
 class WithRepair(Operator, BaseModel):

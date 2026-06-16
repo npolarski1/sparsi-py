@@ -22,7 +22,7 @@ async def test_conditional_dag():
     b.vertex("pos_branch").op("MathAddOp").params({"b": 10}).condition("is_pos").condition_input("data").input("a", "data").output("result", "pos_res")
     b.vertex("neg_branch").op("MathAddOp").params({"b": -10}).condition("is_neg").condition_input("data").input("a", "data").output("result", "neg_res")
     
-    b.vertex("merge").op("CoalesceOp").input("a", "pos_res").input("b", "neg_res").output("result", "final")
+    b.vertex("merge").op("CoalesceOp").merge("coalesce").input("a", "pos_res").input("b", "neg_res").output("result", "final")
     
     graph = b.build()
     

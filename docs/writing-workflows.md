@@ -2,12 +2,12 @@
 
 ## AI ops
 
-AI ops default to Gemini 3.5 Flash (`gemini-3.5-flash`) but accept a `provider` param (`"claude"` or `"gemini"`) and a `model` param. They send structured prompts, retry on parse failure, and emit reasoning traces alongside the result.
+AI ops default to Gemini 3.5 Flash (`gemini-3.5-flash`) but accept a `provider` param (`"claude"` or `"gemini"`) and a `model` param. They require `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) for Gemini, and `ANTHROPIC_API_KEY` for Claude.
 
 ```python
 b.vertex("summarize").op("AISummarizeOp").params({
     "operation": "summarize into 3 bullet points",
-    "model": "claude-3-5-sonnet-20240620"
+    "model": "gemini-3.5-flash"
 }).input("input", "document").output("result", "summary")
 ```
 

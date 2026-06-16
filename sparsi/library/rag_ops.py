@@ -113,4 +113,5 @@ class ValidateCitationsOp(Operator, BaseModel):
             # Strip invalid citations or mark them
             self.validated_answer = self.answer + f"\n\n[Warning: Invalid citations: {', '.join(invalid)}]"
         else:
+            self.is_valid = True
             self.validated_answer = self.answer

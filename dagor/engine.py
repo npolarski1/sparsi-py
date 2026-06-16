@@ -76,12 +76,30 @@ class Engine:
 
     async def _run_vertex(self, name: str, ctx: Any, run_id: str) -> None:
         vertex = self.graph.vertices[name]
+        try:
+            await self._run_vertex_core(name, ctx, run_id)
+        except Exception as e:
+            # We don't log here as it's logged in _run_vertex_core
+            raise e
+        finally:
+            # IMPORTANT: Always set output events to avoid deadlocking downstream tasks
+            for wire_name in vertex.outputs.values():
+                if wire_name in self._wire_events and not self._wire_events[wire_name].is_set():
+                    if wire_name not in self.wires:
+                        self.wires[wire_name] = None
+                    self._wire_events[wire_name].set()
+
+    async def _run_vertex_core(self, name: str, ctx: Any, run_id: str) -> None:
+        vertex = self.graph.vertices[name]
         
         # 1. Wait for all input wires
         input_wires = list(vertex.inputs.values()) + vertex.condition_inputs
         for wire in input_wires:
             if wire in self._wire_events:
-                await self._wire_events[wire].wait()
+                if not self._wire_events[wire].is_set():
+                    logger.debug("vertex_waiting", vertex=name, wire=wire)
+                    await self._wire_events[wire].wait()
+                    logger.debug("vertex_ready", vertex=name, wire=wire)
         
         # 2. Check for upstream skips
         upstream_skipped = any(w in self.skipped_wires for w in input_wires)
@@ -111,10 +129,6 @@ class Engine:
                 logger.error("predicate_evaluation_failed", vertex=name, error=str(e))
                 if self.reporter:
                     self.reporter.vertex_failed(name, run_id, vertex.operator_name or "fanout", e, 0)
-                # Fail outputs to avoid deadlocks
-                for wire_name in vertex.outputs.values():
-                    if wire_name in self._wire_events:
-                        self._wire_events[wire_name].set()
                 raise e
         
         # 4. Instantiate and run operator
@@ -169,9 +183,7 @@ class Engine:
                 self.reporter.vertex_finished(name, run_id, "fanout", {}, duration_ms)
         else:
             # Handle empty nodes or base cases
-            for wire_name in vertex.outputs.values():
-                if wire_name in self._wire_events:
-                    self._wire_events[wire_name].set()
+            return
 
     def _skip_vertex(self, name: str, run_id: str, reason: str) -> None:
         self.skipped_vertices.add(name)

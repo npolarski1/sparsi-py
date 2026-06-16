@@ -48,7 +48,7 @@ class EnvEmbeddingClientFactory:
             raise ValueError(f"EnvEmbeddingClientFactory only supports gemini, got {provider}")
         
         if ref not in self._clients:
-            api_key = os.environ.get("GOOGLE_API_KEY")
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             self._clients[ref] = genai.Client(api_key=api_key)
             
         return GeminiEmbeddingClient(self._clients[ref], model)

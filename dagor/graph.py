@@ -44,6 +44,46 @@ class Graph:
         self.vertices[vertex.name] = vertex
 
     def validate(self):
-        # Basic validation: check for cycles, dangling wires, etc.
-        # Implementation can be expanded as needed.
-        pass
+        # 1. Build adjacency list of vertices
+        # A vertex A depends on B if A has an input wire that B outputs.
+        adj = {v_name: [] for v_name in self.vertices}
+        
+        # Wire name -> Producer vertex
+        wire_producers = {}
+        for v in self.vertices.values():
+            for wire in v.outputs.values():
+                wire_producers[wire] = v.name
+        
+        for v_name, v in self.vertices.items():
+            inputs = list(v.inputs.values()) + v.condition_inputs
+            if v.iterator_wire:
+                inputs.append(v.iterator_wire)
+            
+            for wire in inputs:
+                producer = wire_producers.get(wire)
+                if producer:
+                    # u -> v means u produces wire consumed by v
+                    # So B -> A means B produces wire consumed by A
+                    if v_name not in adj[producer]:
+                        adj[producer].append(v_name)
+        
+        # 2. Check for cycles using DFS
+        visited = set()
+        path = set()
+        
+        def check(u):
+            visited.add(u)
+            path.add(u)
+            for v in adj[u]:
+                if v in path:
+                    return True
+                if v not in visited:
+                    if check(v):
+                        return True
+            path.remove(u)
+            return False
+            
+        for v_name in self.vertices:
+            if v_name not in visited:
+                if check(v_name):
+                    raise ValueError(f"Graph '{self.name}' has a cycle involving vertex '{v_name}'")

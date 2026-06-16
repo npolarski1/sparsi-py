@@ -3,6 +3,8 @@ from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
 from dagor import Operator, register_operator, Input, Output
 
+from .repair import ErrRepairable
+
 @register_operator("JsonExtractOp")
 @register_operator("JSONExtractOp")
 class JsonExtractOp(Operator, BaseModel):
@@ -53,5 +55,5 @@ class JsonParseOp(Operator, BaseModel):
             return
         try:
             self.result = json.loads(self.json_str)
-        except json.JSONDecodeError:
-            self.result = None
+        except json.JSONDecodeError as e:
+            raise ErrRepairable(f"Invalid JSON string: {self.json_str}. Error: {str(e)}", cause=e)

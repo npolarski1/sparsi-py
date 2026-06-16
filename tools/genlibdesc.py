@@ -56,11 +56,13 @@ def main():
     output_dirs = [
         "skill-src/sparsi-py-design/references",
         "skill-src/sparsi-py-codegen/references",
+        "docs",
     ]
     
     for d in output_dirs:
         os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, "library.md")
+        filename = "library.md" if "skill-src" in d else "operators.md"
+        path = os.path.join(d, filename)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"Wrote {path}")

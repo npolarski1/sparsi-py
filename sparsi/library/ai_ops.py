@@ -2,6 +2,7 @@ import os
 import asyncio
 import structlog
 import re
+import json
 from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field
 from dagor import Operator, register_operator, Input, Output, get_run_id
@@ -10,6 +11,8 @@ from google import genai
 from google.genai import types
 
 logger = structlog.get_logger(__name__)
+
+from .repair_base import ErrRepairable
 
 @register_operator("AIComputeOp")
 @register_operator("AIComputeStringToStringOp")
@@ -58,7 +61,11 @@ class AIComputeOp(Operator, BaseModel):
         self.usage_output_tokens = response.usage.output_tokens
 
     async def _run_gemini(self):
-        client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+            
+        client = genai.Client(api_key=api_key)
         config = types.GenerateContentConfig(
             system_instruction=self.system if self.system else None,
         )
@@ -189,7 +196,9 @@ class AIParseNumberOp(Operator, BaseModel):
         await ai.run(ctx)
         
         match = re.search(r"(\d+\.\d+|\d+)", ai.result)
-        self.result = float(match.group(1)) if match else 0.0
+        if not match:
+            raise ErrRepairable(f"Could not find a number in LLM response: {ai.result}")
+        self.result = float(match.group(1))
 
 @register_operator("AIExtractMapOp")
 class AIExtractMapOp(Operator, BaseModel):
@@ -211,8 +220,8 @@ class AIExtractMapOp(Operator, BaseModel):
         
         try:
             self.result = json.loads(ai.result)
-        except:
-            self.result = {}
+        except json.JSONDecodeError as e:
+            raise ErrRepairable(f"Invalid JSON from LLM: {ai.result}. Error: {str(e)}", cause=e)
 
 @register_operator("AIBestMatchOp")
 class AIBestMatchOp(Operator, BaseModel):
