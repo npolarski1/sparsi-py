@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/google-gemini/sparsi/main/sparsi_logo.svg" alt="sparsi-py logo" width="400">
+  <img src="sparsi_logo.svg" alt="sparsi-py logo" width="400">
 </p>
 
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
