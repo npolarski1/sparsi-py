@@ -13,6 +13,7 @@ from google.genai import types
 logger = structlog.get_logger(__name__)
 
 from .repair_base import ErrRepairable
+from .reasoning import record_reasoning
 
 @register_operator("AIComputeOp")
 @register_operator("AIComputeStringToStringOp")
@@ -33,14 +34,55 @@ class AIComputeOp(Operator, BaseModel):
     async def run(self, ctx: Any) -> None:
         run_id = get_run_id()
         logger.debug("AIComputeOp.run", run_id=run_id, model=self.model)
-        
+
+        # Check for reasoning flag in context
+        is_reasoning = False
+        if isinstance(ctx, dict):
+            is_reasoning = ctx.get("reasoning", False)
+        else:
+            is_reasoning = getattr(ctx, "reasoning", False)
+
+        orig_system = self.system
+        orig_prompt = self.prompt
+
+        if is_reasoning:
+            reasoning_system = 'Respond with a JSON object {"result": <your answer in the format described>, "reasoning": "<brief explanation>"}. No markdown, no other text.'
+            self.system = (self.system + "\n" + reasoning_system) if self.system else reasoning_system
+
         if "claude" in self.model:
             await self._run_anthropic()
         elif "gemini" in self.model:
             await self._run_gemini()
         else:
             raise ValueError(f"Unsupported model: {self.model}")
+
+        if is_reasoning:
+            try:
+                # Strip markdown fences if any
+                raw = self.result.strip()
+                if raw.startswith("```"):
+                    # Basic fence stripping
+                    lines = raw.splitlines()
+                    if lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].startswith("```"):
+                        lines = lines[:-1]
+                    raw = "\n".join(lines).strip()
+                
+                data = json.loads(raw)
+                self.result = str(data.get("result", ""))
+                reasoning_text = data.get("reasoning", "")
+                
+                # Record to reasoning log
+                record_reasoning(ctx, self.__class__.__name__, {"prompt": orig_prompt, "system": orig_system}, self.result, reasoning_text)
+            except Exception as e:
+                logger.warning("failed_to_parse_reasoning", error=str(e), raw=self.result)
+                # Fallback: just keep the raw result as is if it fails parsing? 
+                # Or should we try to extract it? sparsi-ts throws RetryError.
+                # Since we don't have a retry loop here yet, we just log it.
         
+        self.system = orig_system # Restore system in case of reuse
+
         logger.debug("AIComputeOp.done", run_id=run_id, input_tokens=self.usage_input_tokens, output_tokens=self.usage_output_tokens)
 
     async def _run_anthropic(self):

@@ -7,26 +7,42 @@ from mcp.client.stdio import stdio_client
 logger = structlog.get_logger(__name__)
 
 class MCPClient:
-    def __init__(self, command: str, args: List[str], env: Optional[Dict[str, str]] = None):
+    def __init__(
+        self, 
+        command: str = "", 
+        args: List[str] = [], 
+        env: Optional[Dict[str, str]] = None,
+        url: str = "",
+        headers: Optional[Dict[str, str]] = None
+    ):
         self.command = command
         self.args = args
         self.env = env or {}
+        self.url = url
+        self.headers = headers or {}
         self.session: Optional[ClientSession] = None
         self._exit_stack = None
         self._client_context = None
 
     async def connect(self):
-        params = StdioServerParameters(
-            command=self.command,
-            args=self.args,
-            env=self.env
-        )
-        self._client_context = stdio_client(params)
+        if self.url:
+            from mcp.client.sse import sse_client
+            logger.debug("mcp_connecting_sse", url=self.url)
+            self._client_context = sse_client(self.url, headers=self.headers)
+        else:
+            params = StdioServerParameters(
+                command=self.command,
+                args=self.args,
+                env=self.env
+            )
+            logger.debug("mcp_connecting_stdio", command=self.command)
+            self._client_context = stdio_client(params)
+        
         read, write = await self._client_context.__aenter__()
         self.session = ClientSession(read, write)
         await self.session.__aenter__()
         await self.session.initialize()
-        logger.debug("mcp_connected", command=self.command)
+        logger.debug("mcp_connected", command=self.command if not self.url else self.url)
 
     async def disconnect(self):
         if self.session:

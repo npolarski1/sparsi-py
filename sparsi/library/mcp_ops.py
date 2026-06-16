@@ -13,6 +13,8 @@ logger = structlog.get_logger(__name__)
 class MCPScriptOp(Operator, BaseModel):
     command: str = ""
     args: List[str] = []
+    url: str = ""
+    headers: Dict[str, str] = {}
     tool_name: str = ""
     arguments: Input = {}
     pool_size: int = 0
@@ -20,6 +22,8 @@ class MCPScriptOp(Operator, BaseModel):
 
     def setup(self, params: Dict[str, Any]) -> None:
         self.command = params.get("command", "")
+        self.url = params.get("url", "")
+        self.headers = params.get("headers", {})
         self.args = params.get("args", [])
         if isinstance(self.args, str):
             self.args = [a.strip() for s in self.args.split(",") for a in s.split() if a.strip()]
@@ -28,10 +32,17 @@ class MCPScriptOp(Operator, BaseModel):
         self.pool_size = int(params.get("pool_size", 0))
 
     async def run(self, ctx: Any) -> None:
-        if not self.command or not self.tool_name:
+        if (not self.command and not self.url) or not self.tool_name:
             return
 
-        client = await global_mcp_pool.acquire(self.command, self.args, None, self.pool_size)
+        client = await global_mcp_pool.acquire(
+            command=self.command, 
+            args=self.args, 
+            env=None, 
+            pool_size=self.pool_size,
+            url=self.url,
+            headers=self.headers
+        )
         try:
             self.result = await client.call_tool(self.tool_name, self.arguments or {})
         finally:
@@ -49,6 +60,8 @@ class MCPCallOp(Operator, BaseModel):
     
     command: str = ""
     args: List[str] = []
+    url: str = ""
+    headers: Dict[str, str] = {}
     tool_name: str = ""
     pool_size: int = 0
     transport: str = "stdio"
@@ -56,6 +69,8 @@ class MCPCallOp(Operator, BaseModel):
     def setup(self, params: Dict[str, Any]) -> None:
         self.transport = params.get("transport", "stdio")
         self.command = params.get("command", "")
+        self.url = params.get("url", "")
+        self.headers = params.get("headers", {})
         self.args = params.get("args", [])
         if isinstance(self.args, str):
             self.args = [a.strip() for a in self.args.split(",") if a.strip()]
@@ -64,11 +79,17 @@ class MCPCallOp(Operator, BaseModel):
         self.pool_size = int(params.get("pool_size", 0))
 
     async def run(self, ctx: Any) -> None:
-        if not self.command or not self.tool_name:
-            raise ValueError("MCPCallOp: command and tool_name are required")
+        if (not self.command and not self.url) or not self.tool_name:
+            raise ValueError("MCPCallOp: command/url and tool_name are required")
 
-        # For now we only support stdio in our pool
-        client = await global_mcp_pool.acquire(self.command, self.args, None, self.pool_size)
+        client = await global_mcp_pool.acquire(
+            command=self.command, 
+            args=self.args, 
+            env=None, 
+            pool_size=self.pool_size,
+            url=self.url,
+            headers=self.headers
+        )
         try:
             # If input is a dict, use as-is, else wrap in a dict if needed or just pass
             args = self.input if isinstance(self.input, dict) else {"value": self.input}
