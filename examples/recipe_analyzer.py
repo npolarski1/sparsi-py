@@ -90,10 +90,10 @@ def build_graph(mode: str):
 
 # --- Execution ---
 
-async def run_workflow(meal: Optional[str] = None, fixture_path: Optional[str] = None):
+async def run_workflow(meal: Optional[str] = None, fixture_path: Optional[str] = None, verbose: bool = False):
     mode = "fixture" if fixture_path else "live"
     graph = build_graph(mode)
-    engine = Engine(graph, reporter=Reporter())
+    engine = Engine(graph, reporter=Reporter() if verbose else None)
     
     inputs = {
         "path_instr": "meals.0.strInstructions",
@@ -127,26 +127,32 @@ async def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--meal", help="meal name to search on TheMealDB")
     group.add_argument("--fixture", help="path to a local JSON response file")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ]
-    )
+    if args.verbose:
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     print(f"Analyzing recipe...")
     try:
-        result = await run_workflow(meal=args.meal, fixture_path=args.fixture)
+        result = await run_workflow(meal=args.meal, fixture_path=args.fixture, verbose=args.verbose)
         print("\n--- Analysis Result ---")
         print(f"Meal: {result['meal']}")
-        print(f"Difficulty Score: {result['difficulty_score']:.1f}")
+        if result['difficulty_score'] is not None:
+            print(f"Difficulty Score: {result['difficulty_score']:.1f}")
         print(f"Advice: {result['advice']}")
     except Exception as e:
-        logger.error("workflow_failed", error=str(e))
+        if args.verbose:
+            logger.error("workflow_failed", error=str(e))
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

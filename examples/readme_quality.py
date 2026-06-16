@@ -88,10 +88,10 @@ def build_graph(mode: str):
 
 # --- Execution ---
 
-async def run_workflow(slug: Optional[str] = None, fixture_path: Optional[str] = None):
+async def run_workflow(slug: Optional[str] = None, fixture_path: Optional[str] = None, verbose: bool = False):
     mode = "fixture" if fixture_path else "live"
     graph = build_graph(mode)
-    engine = Engine(graph, reporter=Reporter())
+    engine = Engine(graph, reporter=Reporter() if verbose else None)
     
     inputs = {
         "status_200": 200,
@@ -125,25 +125,31 @@ async def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--slug", help="owner/repo slug, e.g. golang/go")
     group.add_argument("--fixture", help="path to a local README file")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ]
-    )
+    if args.verbose:
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     print(f"Assessing README quality...")
     try:
-        result = await run_workflow(slug=args.slug, fixture_path=args.fixture)
+        result = await run_workflow(slug=args.slug, fixture_path=args.fixture, verbose=args.verbose)
         print("\n--- Assessment Result ---")
-        print(f"Average Score: {result['avg_score']:.2f}")
+        if result['avg_score'] is not None:
+            print(f"Average Score: {result['avg_score']:.2f}")
         print("\n" + result["narrative"])
     except Exception as e:
-        logger.error("workflow_failed", error=str(e))
+        if args.verbose:
+            logger.error("workflow_failed", error=str(e))
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

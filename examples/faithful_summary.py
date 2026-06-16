@@ -31,10 +31,10 @@ def build_graph():
     # 1. Inject source
     b.vertex("source_const").op("ContextValOp").params({"key": "source"}).output("result", "source")
     
-    # 2. Summarize with Claude
+    # 2. Summarize with Gemini
     b.vertex("summarize").op("AIComputeStringToStringOp").params({
         "operation": "summarize this article in 3–5 concise sentences; include only information explicitly stated in the text, do not add context or draw inferences",
-        "model": "claude-3-5-sonnet-20240620",
+        "model": "gemini-3.5-flash",
     }).input("prompt", "source").output("result", "summary")
     
     # 3. Format for check
@@ -53,9 +53,9 @@ def build_graph():
 
 # --- Shared Execution ---
 
-async def run_workflow(source_text: str):
+async def run_workflow(source_text: str, verbose: bool):
     graph = build_graph()
-    engine = Engine(graph, reporter=Reporter())
+    engine = Engine(graph, reporter=Reporter() if verbose else None)
     
     await engine.run({"source": source_text})
     
@@ -75,16 +75,18 @@ async def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--file", help="path to a text file to summarize")
     group.add_argument("--text", help="inline source text to summarize")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ]
-    )
+    if args.verbose:
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     source = args.text
     if args.file:
@@ -93,11 +95,14 @@ async def main():
 
     print(f"Running faithful-summary workflow...")
     try:
-        result = await run_workflow(source)
+        result = await run_workflow(source, args.verbose)
         print("\n--- Workflow Result ---")
         print(json.dumps(result, indent=2))
     except Exception as e:
-        logger.error("workflow_failed", error=str(e))
+        if args.verbose:
+            logger.error("workflow_failed", error=str(e))
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

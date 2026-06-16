@@ -52,6 +52,10 @@ class Operator(ABC):
     def set_input_field(self, name: str, value: Any) -> None:
         """Sets a specific input field."""
         if not hasattr(self, name):
+            # Check if pydantic allows extra fields
+            if isinstance(self, BaseModel) and self.model_config.get("extra") == "allow":
+                setattr(self, name, value)
+                return
             raise AttributeError(f"Operator {self.__class__.__name__} has no field {name}")
         setattr(self, name, value)
 

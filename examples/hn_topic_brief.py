@@ -178,11 +178,11 @@ async def fetch_hn(query: str) -> str:
         resp.raise_for_status()
         return resp.text
 
-async def run_workflow(query: str):
+async def run_workflow(query: str, verbose: bool):
     response_json = await fetch_hn(query)
     
     graph = build_graph(query)
-    engine = Engine(graph, reporter=Reporter())
+    engine = Engine(graph, reporter=Reporter() if verbose else None)
     
     await engine.run({"response": response_json})
     
@@ -200,25 +200,30 @@ async def run_workflow(query: str):
 async def main():
     parser = argparse.ArgumentParser(description="HackerNews topic brief generator.")
     parser.add_argument("--query", required=True, help="HN search query")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ]
-    )
+    if args.verbose:
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     print(f"Generating HN brief for: {args.query}...")
     try:
-        result = await run_workflow(args.query)
+        result = await run_workflow(args.query, args.verbose)
         print("\n--- Topic Brief ---")
         print(f"Style: {result['style']}")
         print("\n" + result["brief"])
     except Exception as e:
-        logger.error("workflow_failed", error=str(e))
+        if args.verbose:
+            logger.error("workflow_failed", error=str(e))
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

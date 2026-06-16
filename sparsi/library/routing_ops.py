@@ -25,7 +25,7 @@ class ModeSelectOp(Operator, BaseModel):
     input: Input = ""
     result: Output = ""
     
-    categories: List[str] = []
+    categories: Any = [] # Changed from List[str] to Any to avoid strict Pydantic list validation during vertex creation
     max_retries: int = 3
     provider: str = "gemini"
     model: str = "gemini-3.5-flash"
@@ -33,7 +33,12 @@ class ModeSelectOp(Operator, BaseModel):
     def setup(self, params: Dict[str, Any]) -> None:
         raw_cats = params.get("categories", "")
         if raw_cats:
-            self.categories = [c.strip() for c in raw_cats.split(",") if c.strip()]
+            if isinstance(raw_cats, str):
+                self.categories = [c.strip() for c in raw_cats.split(",") if c.strip()]
+            elif isinstance(raw_cats, list):
+                self.categories = [str(c).strip() for c in raw_cats if str(c).strip()]
+            else:
+                self.categories = [str(raw_cats)]
         
         self.max_retries = int(params.get("max_retries", self.max_retries))
         self.provider = params.get("provider", self.provider)

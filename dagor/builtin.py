@@ -65,6 +65,8 @@ class CoalesceNStringOp(Operator, BaseModel):
         for i in range(self.n):
             name = f"Input{i}"
             val = getattr(self, name, None)
+            if val is None and self.model_extra:
+                val = self.model_extra.get(name)
             if val is not None:
                 self.result = val
                 return

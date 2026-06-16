@@ -91,9 +91,9 @@ def build_graph():
 
 # --- Execution ---
 
-async def run_workflow(ticker: str):
+async def run_workflow(ticker: str, verbose: bool = False):
     graph = build_graph()
-    engine = Engine(graph, reporter=Reporter())
+    engine = Engine(graph, reporter=Reporter() if verbose else None)
     
     await engine.run({"ticker": ticker.upper()})
     
@@ -108,24 +108,29 @@ async def run_workflow(ticker: str):
 async def main():
     parser = argparse.ArgumentParser(description="Stock analyzer.")
     parser.add_argument("--ticker", default="AAPL", help="Stock ticker symbol")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ]
-    )
+    if args.verbose:
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     print(f"Analyzing stock: {args.ticker}...")
     try:
-        result = await run_workflow(args.ticker)
+        result = await run_workflow(args.ticker, args.verbose)
         print("\n--- Recommendation ---")
         print(result["recommendation"])
     except Exception as e:
-        logger.error("workflow_failed", error=str(e))
+        if args.verbose:
+            logger.error("workflow_failed", error=str(e))
+        else:
+            print(f"Error: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
