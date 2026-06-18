@@ -19,19 +19,26 @@ deterministic alternative exists.
 
 Every generated program is dual-mode: a one-shot CLI tool by default, or a
 local stdin/stdout MCP server when invoked with `--mcp`. In MCP mode the whole
-workflow is exposed as **one MCP tool**; every external input is deserialized
-out of the incoming `tools/call` request, and the final outputs are returned as
-the tool result.
+workflow is exposed as **one MCP tool**.
 
-# Retrieval (RAG)
+# Example selection guide
 
-When the workflow needs facts that are not in the user's input, fan in retrieved context via `RetrieveOp`. 
-The op outputs `results` (List of search results).
+| Workflow pattern | Example |
+|---|---|
+| Classification → routing → extraction | `examples/ticket_triager/` |
+| Parallel extraction → deterministic scoring | `examples/recipe_analyzer/` |
+| Parallel HTTP fetch → quality probes | `examples/readme_quality/` |
+| Multi-stage extraction → banding → advice | `examples/weather_advisor/` |
+| MapOver fan-out → aggregation | `examples/hn_topic_brief/` |
+| Cross-model verification (Generation + Verification) | `examples/faithful_summary/` |
+| AI-driven repair (`WithRepair`) | `examples/with_repair/` |
+| RAG with lexical/vector retriever | `examples/rag_bm25/`, `examples/rag_gemini_embed/` |
 
-# AI Recovery (WithRepair)
+# AI recovery wrapper (WithRepair) placement
 
-Use `WithRepair` at the upstream boundary to wrap ops that ingest outside input.
-Downstream vertices can then treat the value as well-formed.
+WithRepair is most suitable at the **upstream boundary** of the DAG — wrap the op
+that first ingests outside input so the workflow validates and, if necessary, repairs
+that input before anything downstream depends on it.
 
 # Output format
 

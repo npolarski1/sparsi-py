@@ -88,6 +88,10 @@ async def main():
             ]
         )
 
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("Error: No AI API keys found. This example requires Gemini or Claude.")
+        sys.exit(1)
+
     source = args.text
     if args.file:
         with open(args.file, "r", encoding="utf-8") as f:

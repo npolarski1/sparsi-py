@@ -37,8 +37,8 @@ async def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("Warning: GOOGLE_API_KEY not found. This example uses Gemini.")
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        print("Warning: Neither GEMINI_API_KEY nor GOOGLE_API_KEY found. This example uses Gemini.")
 
     if args.verbose:
         structlog.configure(

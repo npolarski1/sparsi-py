@@ -26,6 +26,15 @@ class MCPClient:
 
     async def connect(self):
         if self.url:
+            import logging
+            # Silence the "Unknown SSE event: ping" noise from the mcp library
+            class PingFilter(logging.Filter):
+                def filter(self, record):
+                    return "Unknown SSE event: ping" not in record.getMessage()
+            
+            logging.getLogger("mcp.client.sse").addFilter(PingFilter())
+            logging.getLogger("mcp.client.streamable_http").addFilter(PingFilter())
+
             from mcp.client.sse import sse_client
             logger.debug("mcp_connecting_sse", url=self.url)
             self._client_context = sse_client(self.url, headers=self.headers)
@@ -45,10 +54,19 @@ class MCPClient:
         logger.debug("mcp_connected", command=self.command if not self.url else self.url)
 
     async def disconnect(self):
-        if self.session:
-            await self.session.__aexit__(None, None, None)
-        if self._client_context:
-            await self._client_context.__aexit__(None, None, None)
+        try:
+            if self.session:
+                await self.session.__aexit__(None, None, None)
+            if self._client_context:
+                await self._client_context.__aexit__(None, None, None)
+        except RuntimeError as e:
+            if "Attempted to exit cancel scope in a different task" in str(e):
+                logger.debug("mcp_disconnect_task_mismatch", error=str(e))
+            else:
+                raise
+        except Exception as e:
+            logger.debug("mcp_disconnect_error", error=str(e))
+            
         logger.debug("mcp_disconnected", command=self.command)
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:

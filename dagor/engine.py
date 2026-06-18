@@ -94,6 +94,11 @@ class Engine:
         
         # 1. Wait for all input wires
         input_wires = list(vertex.inputs.values()) + vertex.condition_inputs
+        if vertex.iterator_wire:
+            input_wires.append(vertex.iterator_wire)
+        if vertex.initial_value_wire:
+            input_wires.append(vertex.initial_value_wire)
+            
         for wire in input_wires:
             if wire in self._wire_events:
                 if not self._wire_events[wire].is_set():

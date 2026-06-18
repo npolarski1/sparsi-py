@@ -93,13 +93,15 @@ b.vertex("summary").op("AIComputeOp").params({"operation": "summarize"}).input("
 
 | Example | Highlights |
 | :--- | :--- |
-| [**Ticket Triager**](./examples/ticket_triager.py) | Classification, structured routing, and multi-model support. |
-| [**Recipe Analyzer**](./examples/recipe_analyzer.py) | Parallel extraction, difficulty scoring, and gated advice. |
-| [**Faithful Summary**](./examples/faithful_summary.py) | **Mix Claude + Gemini** for cross-model verification. |
-| [**HN Topic Brief**](./examples/hn_topic_brief.py) | API integration with parallel relevance filtering. |
-| [**README Quality**](./examples/readme_quality.py) | Concurrent quality probes and automated code review. |
-| [**Smart Doc Assistant**](./examples/smart_doc_assistant.py) | Advanced RAG with filtering, reranking, and citation validation. |
-| [**Repair JSON**](./examples/repair_json.py) | `withRepair` — AI-driven self-healing for malformed JSON. |
+| [**Ticket Triager**](./examples/ticket_triager/main.py) | Classification, structured routing, and multi-model support. |
+| [**Recipe Analyzer**](./examples/recipe_analyzer/main.py) | Parallel extraction, difficulty scoring, and gated advice. |
+| [**Faithful Summary**](./examples/faithful_summary/main.py) | **Mix Claude + Gemini** for cross-model verification. |
+| [**HN Topic Brief**](./examples/hn_topic_brief/main.py) | API integration with parallel relevance filtering. |
+| [**README Quality**](./examples/readme_quality/main.py) | Concurrent quality probes and automated code review. |
+| [**Smart Doc Assistant**](./examples/smart_doc_assistant/main.py) | Advanced RAG with filtering, reranking, and citation validation. |
+| [**Repair JSON**](./examples/repair_json/main.py) | `withRepair` — AI-driven self-healing for malformed JSON. |
+| [**Weather Advisor**](./examples/weather_advisor/main.py) | Complex multi-stage workflow with parallel extraction. |
+| [**Stock Analyzer**](./examples/stock_analyzer/main.py) | Hybrid deterministic/AI financial analysis. |
 
 ---
 

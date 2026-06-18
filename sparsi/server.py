@@ -103,11 +103,22 @@ def run_dual_mode(name: str, builder_func: Callable[[], Builder], input_mapping:
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--mcp", action="store_true", help="Run as MCP server")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     # Add CLI arguments dynamically based on input_mapping
     for arg in input_mapping.keys():
         parser.add_argument(f"--{arg}", required=False)
     
     args = parser.parse_args()
+
+    if args.verbose:
+        import structlog
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     if args.mcp:
         server = MCPServer(name)
@@ -126,9 +137,11 @@ def run_dual_mode(name: str, builder_func: Callable[[], Builder], input_mapping:
         async def run_cli():
             b = builder_func()
             g = b.build()
-            e = Engine(g)
-            await e.run(inputs)
-            res, _ = e.get_output(output_wire)
+            
+            from dagor import Reporter
+            engine = Engine(g, reporter=Reporter() if args.verbose else None)
+            await engine.run(inputs)
+            res, _ = engine.get_output(output_wire)
             print(res)
             
         asyncio.run(run_cli())

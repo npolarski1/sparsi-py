@@ -90,7 +90,35 @@ class WithRepair(Operator, BaseModel):
 
             try:
                 # Update the input field with the LLM's suggested fix
-                self._inner.set_input_field(self.input_field, llm_response)
+                target_field = self.input_field
+                
+                # Check if we need to do any unmarshaling
+                # We peek at the type of the current value to decide
+                current_val = getattr(self._inner, target_field, None)
+                
+                if hasattr(current_val, "unmarshal_repair"):
+                    current_val.unmarshal_repair(llm_response)
+                elif isinstance(current_val, dict):
+                    # Attempt to parse as JSON first
+                    llm_response_clean = self._strip_code_fences(llm_response)
+                    try:
+                        import json
+                        fixed_val = json.loads(llm_response_clean)
+                        setattr(self._inner, target_field, fixed_val)
+                    except json.JSONDecodeError:
+                        # Try XML if it looks like XML
+                        if llm_response_clean.strip().startswith("<"):
+                            try:
+                                import xml.etree.ElementTree as ET
+                                root = ET.fromstring(llm_response_clean)
+                                fixed_val = {child.tag: child.text for child in root}
+                                setattr(self._inner, target_field, fixed_val)
+                            except Exception:
+                                raise ValueError(f"Failed to parse repair response as JSON or XML: {llm_response_clean[:100]}...")
+                        else:
+                            raise
+                else:
+                    self._inner.set_input_field(target_field, llm_response)
                 
                 # Re-run the inner op
                 await self._inner.run(ctx)
@@ -104,3 +132,14 @@ class WithRepair(Operator, BaseModel):
                 raise e
         
         raise RuntimeError(f"WithRepair[{self.inner_op_name}] exhausted {self.max_attempts} attempts")
+
+    def _strip_code_fences(self, s: str) -> str:
+        s = s.strip()
+        if s.startswith("```"):
+            lines = s.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            s = "\n".join(lines).strip()
+        return s
