@@ -15,6 +15,24 @@ logger = structlog.get_logger(__name__)
 from .repair_base import ErrRepairable
 from .reasoning import record_reasoning
 
+_anthropic_client = None
+_gemini_client = None
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    return _anthropic_client
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+        _gemini_client = genai.Client(api_key=api_key)
+    return _gemini_client
+
 @register_operator("AIComputeOp")
 @register_operator("AIComputeStringToStringOp")
 class AIComputeOp(Operator, BaseModel):
@@ -86,7 +104,7 @@ class AIComputeOp(Operator, BaseModel):
         logger.debug("AIComputeOp.done", run_id=run_id, input_tokens=self.usage_input_tokens, output_tokens=self.usage_output_tokens)
 
     async def _run_anthropic(self):
-        client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        client = _get_anthropic_client()
         messages = [{"role": "user", "content": self.prompt}]
         
         kwargs = {
@@ -103,17 +121,12 @@ class AIComputeOp(Operator, BaseModel):
         self.usage_output_tokens = response.usage.output_tokens
 
     async def _run_gemini(self):
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
-            
-        client = genai.Client(api_key=api_key)
+        client = _get_gemini_client()
         config = types.GenerateContentConfig(
             system_instruction=self.system if self.system else None,
         )
-        # Using sync client for now as per previous implementation but wrapping in executor if needed
-        # google-genai 1.0.0+ has native sync/async.
-        response = client.models.generate_content(
+        # Using async client
+        response = await client.aio.models.generate_content(
             model=self.model,
             contents=self.prompt,
             config=config,
@@ -128,6 +141,8 @@ class AIBoolOp(Operator, BaseModel):
     input: Input = ""
     predicate: str = ""
     result: Output = False
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -150,11 +165,15 @@ class AIBoolOp(Operator, BaseModel):
         else:
             self.result = "true" in raw
 
+            self.usage_input_tokens = ai.usage_input_tokens
+            self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIScoreOp")
 class AIScoreOp(Operator, BaseModel):
     input: Input = ""
     criterion: str = ""
     result: Output = 0.0
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -174,11 +193,15 @@ class AIScoreOp(Operator, BaseModel):
         except:
             self.result = 0.0
 
+            self.usage_input_tokens = ai.usage_input_tokens
+            self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIClassifyMultiLabelOp")
 class AIClassifyMultiLabelOp(Operator, BaseModel):
     input: Input = ""
     categories: Any = [] # Use Any to allow string from params before setup() splits it
     result: Output = []
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -199,11 +222,15 @@ class AIClassifyMultiLabelOp(Operator, BaseModel):
         
         self.result = [s.strip() for s in ai.result.split(",") if s.strip() in self.categories]
 
+        self.usage_input_tokens = ai.usage_input_tokens
+        self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIExtractStringSliceOp")
 class AIExtractStringSliceOp(Operator, BaseModel):
     input: Input = ""
     operation: str = ""
     result: Output = []
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -219,11 +246,15 @@ class AIExtractStringSliceOp(Operator, BaseModel):
         
         self.result = [s.strip() for s in ai.result.split(",") if s.strip()]
 
+        self.usage_input_tokens = ai.usage_input_tokens
+        self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIParseNumberOp")
 class AIParseNumberOp(Operator, BaseModel):
     input: Input = ""
     operation: str = ""
     result: Output = 0.0
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -242,11 +273,15 @@ class AIParseNumberOp(Operator, BaseModel):
             raise ErrRepairable(f"Could not find a number in LLM response: {ai.result}")
         self.result = float(match.group(1))
 
+        self.usage_input_tokens = ai.usage_input_tokens
+        self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIExtractMapOp")
 class AIExtractMapOp(Operator, BaseModel):
     input: Input = ""
     operation: str = ""
     result: Output = {}
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -261,7 +296,17 @@ class AIExtractMapOp(Operator, BaseModel):
         await ai.run(ctx)
         
         try:
-            self.result = json.loads(ai.result)
+            raw = ai.result.strip()
+            if raw.startswith("```"):
+                lines = raw.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                raw = "\n".join(lines).strip()
+            self.result = json.loads(raw)
+            self.usage_input_tokens = ai.usage_input_tokens
+            self.usage_output_tokens = ai.usage_output_tokens
         except json.JSONDecodeError as e:
             raise ErrRepairable(f"Invalid JSON from LLM: {ai.result}. Error: {str(e)}", cause=e)
 
@@ -270,6 +315,8 @@ class AIBestMatchOp(Operator, BaseModel):
     query: Input = ""
     candidates: Input = []
     result: Output = 0
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     async def run(self, ctx: Any) -> None:
@@ -287,11 +334,15 @@ class AIBestMatchOp(Operator, BaseModel):
         match = re.search(r"(\d+)", ai.result)
         self.result = int(match.group(1)) if match else 0
 
+        self.usage_input_tokens = ai.usage_input_tokens
+        self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AIRerankOp")
 class AIRerankOp(Operator, BaseModel):
     query: Input = ""
     candidates: Input = []
     result: Output = []
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     async def run(self, ctx: Any) -> None:
@@ -311,11 +362,15 @@ class AIRerankOp(Operator, BaseModel):
         except:
             self.result = list(range(len(self.candidates)))
 
+            self.usage_input_tokens = ai.usage_input_tokens
+            self.usage_output_tokens = ai.usage_output_tokens
 @register_operator("AISummarizeOp")
 class AISummarizeOp(Operator, BaseModel):
     input: Input = None
     operation: str = ""
     result: Output = ""
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     model: str = "gemini-3.5-flash"
 
     def setup(self, params: Dict[str, Any]) -> None:
@@ -332,3 +387,6 @@ class AISummarizeOp(Operator, BaseModel):
         ai = AIComputeOp(model=self.model, prompt=prompt)
         await ai.run(ctx)
         self.result = ai.result
+
+        self.usage_input_tokens = ai.usage_input_tokens
+        self.usage_output_tokens = ai.usage_output_tokens
