@@ -121,6 +121,10 @@ async def main():
             ]
         )
 
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        print("Error: Neither GEMINI_API_KEY nor GOOGLE_API_KEY found. This example requires Gemini.")
+        sys.exit(1)
+
     print(f"Analyzing stock: {args.ticker}...")
     try:
         result = await run_workflow(args.ticker, args.verbose)

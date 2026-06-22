@@ -24,21 +24,34 @@ b.vertex("v1").op("OpName").params({"key": "val"}).input("in_field", "wire").out
 
 ## Input Injection
 Use `ContextValOp` to read from the `initial_wires` dict passed to `engine.run()`.
+Always declare the mapping in the `run_dual_mode` call.
 
-## Dual-mode main
-Always include a `main()` that supports `--mcp` for serving the workflow as an MCP tool.
+## Dual-mode entrypoint
+Always use `sparsi.run_dual_mode` for the `main()` entrypoint.
 
-# Example Structure
+# Steps
+
+1.  **Strict Adherence**: Implement the approved design EXACTLY.
+2.  **Imports**: Import `asyncio`, `dagor`, and `sparsi.library`.
+3.  **Graph Construction**: Define a `build_graph()` function.
+4.  **Operator Registration**: Use `@register_operator` for custom ops.
+5.  **Main**: Use `run_dual_mode` to support both CLI and MCP.
+
+# Example structure
 
 ```python
 import asyncio
-from dagor import Builder, Engine, Reporter
+from dagor import Builder, register_operator, Operator, Input, Output
+from sparsi import run_dual_mode
+from pydantic import BaseModel
 import sparsi.library
 
-async def run_workflow(inputs):
-    b = Builder("my_workflow")
-    # ... build graph ...
-    engine = Engine(b.build(), reporter=Reporter())
-    await engine.run(inputs)
-    return engine.get_output("final")
+def build_graph():
+    b = Builder("hello_workflow")
+    b.vertex("in").op("ContextValOp").params({"key": "name"}).output("result", "name_wire")
+    b.vertex("greet").op("StringConcatOp").params({"a": "Hello, "}).input("b", "name_wire").output("result", "final_result")
+    return b
+
+if __name__ == "__main__":
+    run_dual_mode("hello_tool", build_graph, {"name": "name"})
 ```

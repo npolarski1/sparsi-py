@@ -56,8 +56,8 @@ async def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("Error: GOOGLE_API_KEY not found. This example requires Gemini.")
+    if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
+        print("Error: Neither GEMINI_API_KEY nor GOOGLE_API_KEY found. This example requires Gemini.")
         sys.exit(1)
 
     if args.verbose:

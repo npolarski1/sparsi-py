@@ -25,28 +25,15 @@ Today's agents are interpreters. They re-derive the same routines — classify, 
 
 ---
 
-## Features
-
-- **MCP First**: Every workflow can be served as a standard MCP tool via stdio or HTTP.
-- **Rich Operator Library**: 60+ built-in ops for Math, Strings, JSON, I/O, and advanced AI tasks.
-- **AI-Assisted Repair**: Gracefully recover from LLM hallucinations with bounded retry loops.
-- **Async Fan-out**: Concurrent `MapOver` and `FilterBy` support for high-scale document processing.
-- **RAG & Retrieval**: First-class support for retrieval-augmented generation with citation validation.
-- **Persistent MCP Pool**: Efficiently manage external tools like Playwright or sandboxed filesystems.
-
----
-
 ## Quick Start
-
-The fastest way to build Sparsi workflows is using our bundled skills. They allow you to design and generate Python code automatically within your AI assistant.
 
 ### 1. Install the Library
 ```bash
 pip install sparsi-py
 ```
 
-### 2. Install the AI Skills
-Copy the `sparsi-py-design` and `sparsi-py-codegen` directories to your assistant's skills folder:
+### 2. Install the AI Skills (Optional)
+Sparsi provides bundled skills to help you design and generate Python code automatically within your AI assistant. Copy the skills to your assistant's skills folder:
 
 **macOS / Linux:**
 ```bash
@@ -58,28 +45,63 @@ cp -r skills/sparsi-py-design skills/sparsi-py-codegen ~/.claude/skills/
 Copy-Item -Recurse skills/sparsi-py-design, skills/sparsi-py-codegen "$env:USERPROFILE\.claude\skills\"
 ```
 
-### 3. Start Designing
-Invoke the design skill from your assistant with your task description:
-```bash
-/sparsi-py-design <your task here>
+### 3. Build a Deterministic Workflow
+```python
+import asyncio
+from dagor import Builder, Engine
+import sparsi.library # Registers standard ops
+
+async def main():
+    b = Builder("ticket_triager")
+    
+    # Define inputs and ops
+    b.vertex("input").op("ContextValOp").params({"key": "ticket"}).output("result", "raw_ticket")
+    b.vertex("length").op("StringLenOp").input("input", "raw_ticket").output("result", "char_count")
+    
+    # Conditional branch: only process if ticket is not empty
+    b.vertex("process").op("StringConcatOp").params({"a": "Processing: "}).input("b", "raw_ticket").output("result", "processed")\
+        .condition_input("char_count").condition("is_not_empty")
+        
+    graph = b.build()
+    engine = Engine(graph)
+    
+    await engine.run({"ticket": "My screen is flickering!"})
+    res, ok = engine.get_output("processed")
+    print(res)
+
+asyncio.run(main())
+```
+
+### 4. Add AI
+```python
+from dagor import Builder
+from sparsi.library import AIComputeOp, AIBoolOp
+
+b = Builder("ai_workflow")
+b.vertex("input").op("ContextValOp").params({"key": "text"}).output("result", "text")
+
+# High-level AI operators
+b.vertex("has_pii").op("AIBoolOp").params({"predicate": "contains PII?"}).input("input", "text")
+b.vertex("summary").op("AIComputeOp").params({"operation": "summarize"}).input("prompt", "text")
+
+# ... build and run with Engine
 ```
 
 ---
 
 ## Examples
 
-Discover what you can build with Sparsi:
-
 | Example | Highlights |
 | :--- | :--- |
-| [**Ticket Triager**](./examples/ticket_triager.py) | Classification & structured routing. |
-| [**Recipe Analyzer**](./examples/recipe_analyzer.py) | Parallel extraction & Gemini 3.5 Flash integration. |
-| [**Faithful Summary**](./examples/faithful_summary.py) | Cross-model verification (Claude + Gemini). |
-| [**HN Topic Brief**](./examples/hn_topic_brief.py) | API integration with parallel relevance filtering. |
-| [**README Quality**](./examples/readme_quality.py) | Automated code review with concurrent AI probes. |
-| [**Stock Analyzer**](./examples/stock_analyzer.py) | Parallel data fetching and sentiment analysis. |
-| [**Smart Doc Assistant**](./examples/smart_doc_assistant.py) | Advanced RAG with filtering, reranking, and citation validation. |
-| [**Repair JSON**](./examples/repair_json.py) | AI-driven automatic correction of malformed JSON. |
+| [**Ticket Triager**](./examples/ticket_triager/main.py) | Classification, structured routing, and multi-model support. |
+| [**Recipe Analyzer**](./examples/recipe_analyzer/main.py) | Parallel extraction, difficulty scoring, and gated advice. |
+| [**Faithful Summary**](./examples/faithful_summary/main.py) | **Mix Claude + Gemini** for cross-model verification. |
+| [**HN Topic Brief**](./examples/hn_topic_brief/main.py) | API integration with parallel relevance filtering. |
+| [**README Quality**](./examples/readme_quality/main.py) | Concurrent quality probes and automated code review. |
+| [**Smart Doc Assistant**](./examples/smart_doc_assistant/main.py) | Advanced RAG with filtering, reranking, and citation validation. |
+| [**Repair JSON**](./examples/repair_json/main.py) | `withRepair` — AI-driven self-healing for malformed JSON. |
+| [**Weather Advisor**](./examples/weather_advisor/main.py) | Complex multi-stage workflow with parallel extraction. |
+| [**Stock Analyzer**](./examples/stock_analyzer/main.py) | Hybrid deterministic/AI financial analysis. |
 
 ---
 
