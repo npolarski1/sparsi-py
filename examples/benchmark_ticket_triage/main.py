@@ -6,26 +6,23 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
-import structlog
+from typing import Any, Dict, Optional
+import contextvars
 
 # Sparsi imports
-from dagor import Builder, Engine, Reporter
+from dagor import Builder, Engine, Reporter, Operator, register_operator, Input, Output
+from pydantic import BaseModel, ConfigDict
 from dagor.builtin import ContextValOp
 import sparsi.library # Registers all ops
 
 # Langchain imports
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_agent
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
 
 # Ensure API key is set
 if "GEMINI_API_KEY" not in os.environ and "GOOGLE_API_KEY" not in os.environ:
     print("Warning: Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set. Execution might fail.")
-    if "ANTHROPIC_API_KEY" in os.environ:
-         print("Warning: Anthropic key is set but we are using Gemini for the benchmark.")
 
 # -------------------------------------------------------------------
 # INTENT DEFINITIONS
@@ -44,21 +41,60 @@ AVAILABLE_INTENTS = [
 INTENT_LIST_STR = ", ".join(AVAILABLE_INTENTS)
 
 # -------------------------------------------------------------------
-# SPARSI WORKFLOW
+# SPARSI WORKFLOW (Context-Aware Multi-Step DAG)
 # -------------------------------------------------------------------
-from pydantic import BaseModel, Field
-from dagor import Operator, register_operator, Input, Output
+
+@register_operator("FormatContextOp")
+class FormatContextOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    utterance: Input = None
+    context: Input = None
+    result: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        self.result = f"UTTERANCE: {self.utterance}\nCONTEXT: {self.context}"
+
+@register_operator("SumTokensOp")
+class SumTokensOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    in1: Input = None; out1: Input = None
+    in2: Input = None; out2: Input = None
+    total_in: Output = None
+    total_out: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        self.total_in = sum(filter(None, [self.in1, self.in2]))
+        self.total_out = sum(filter(None, [self.out1, self.out2]))
 
 def build_sparsi_graph():
     b = Builder("intent_classifier")
-    
     b.vertex("input").op("ContextValOp").params({"key": "utterance"}).output("result", "raw_utterance")
     
-    b.vertex("extract").op("AIExtractMapOp").params({
+    # Node 1: Extract Context
+    b.vertex("extract_ctx").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": f"1. 'intent': EXACTLY one of {INTENT_LIST_STR}. 2. 'is_urgent': boolean true/false. 3. 'language': string (e.g. 'English')"
-    }).input("input", "raw_utterance").output("result", "llm_json").output("usage_input_tokens", "in_toks").output("usage_output_tokens", "out_toks")
-    
+        "operation": "1. 'tone': string. 2. 'language': string. 3. 'key_entities': list of strings"
+    }).input("input", "raw_utterance") \
+      .output("result", "ctx_json").output("usage_input_tokens", "in1").output("usage_output_tokens", "out1")
+      
+    # Helper Node: Format
+    b.vertex("format").op("FormatContextOp") \
+      .input("utterance", "raw_utterance").input("context", "ctx_json") \
+      .output("result", "formatted_input")
+      
+    # Node 2: Classify Intent
+    b.vertex("classify").op("AIExtractMapOp").params({
+        "model": "gemini-3.1-flash-lite",
+        "operation": f"Using the provided UTTERANCE and CONTEXT, classify the intent. 1. 'intent': EXACTLY one of {INTENT_LIST_STR}"
+    }).input("input", "formatted_input") \
+      .output("result", "llm_json").output("usage_input_tokens", "in2").output("usage_output_tokens", "out2")
+      
+    # Helper Node: Tokens
+    b.vertex("sum_tokens").op("SumTokensOp") \
+        .input("in1", "in1").input("out1", "out1") \
+        .input("in2", "in2").input("out2", "out2") \
+        .output("total_in", "in_toks").output("total_out", "out_toks")
+        
     return b.build()
 
 async def run_sparsi(engine: Engine, utterance: str) -> tuple[dict, int, int]:
@@ -71,16 +107,33 @@ async def run_sparsi(engine: Engine, utterance: str) -> tuple[dict, int, int]:
     return extracted or {}, in_toks or 0, out_toks or 0
 
 # -------------------------------------------------------------------
-# LANGCHAIN AGENT
+# LANGCHAIN AGENT (Multi-Step ReAct)
 # -------------------------------------------------------------------
+lc_tokens_var = contextvars.ContextVar("lc_tokens", default=0)
+
 @tool
-def get_available_intents() -> str:
-    """Returns the list of valid intents for classification."""
-    return f"The valid intents are: {INTENT_LIST_STR}"
+async def extract_context(utterance: str) -> str:
+    """Always use this tool FIRST to extract the tone, language, and key entities of the utterance."""
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
+    res = await llm.ainvoke(f"Analyze tone, language, and key entities of: {utterance}")
+    if hasattr(res, "usage_metadata") and res.usage_metadata:
+        toks = res.usage_metadata.get("input_tokens", 0) + res.usage_metadata.get("output_tokens", 0)
+        lc_tokens_var.set(lc_tokens_var.get() + toks)
+    return res.content
+
+@tool
+async def classify_intent(utterance: str, context: str) -> str:
+    """Use this tool SECOND. Provide the original utterance and the context you extracted to classify the intent."""
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
+    res = await llm.ainvoke(f"Given UTTERANCE: '{utterance}' and CONTEXT: '{context}', classify intent into EXACTLY one of: {INTENT_LIST_STR}")
+    if hasattr(res, "usage_metadata") and res.usage_metadata:
+        toks = res.usage_metadata.get("input_tokens", 0) + res.usage_metadata.get("output_tokens", 0)
+        lc_tokens_var.set(lc_tokens_var.get() + toks)
+    return res.content
 
 def build_langchain_agent():
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    tools = [get_available_intents]
+    tools = [extract_context, classify_intent]
     agent_executor = create_react_agent(llm, tools)
     return agent_executor
 
@@ -96,7 +149,6 @@ async def main():
     dataset = load_dataset("bitext/Bitext-customer-support-llm-chatbot-training-dataset", split=f"train[:{args.samples}]")
     test_batch = [{"utterance": item["instruction"], "true_intent": item["intent"]} for item in dataset]
 
-    # Initialize systems
     print("Initializing systems...")
     sparsi_graph = build_sparsi_graph()
     lc_agent = build_langchain_agent()
@@ -118,9 +170,7 @@ async def main():
                 elapsed = time.time() - start_time
                 
                 predicted_intent = extracted_json.get("intent", "")
-                
                 true_intent = item["true_intent"]
-                    
                 correct = int(predicted_intent == true_intent)
                 return {"elapsed": elapsed, "correct": correct, "failure": 0, "tokens": in_toks + out_toks}
             except Exception as e:
@@ -142,8 +192,10 @@ async def main():
     async def run_lc_item(item):
         async with lc_sem:
             start_time = time.time()
+            # Reset contextvar for this run
+            lc_tokens_var.set(0)
             try:
-                prompt = f"Classify the following utterance into one of the valid intents. You MUST use the get_available_intents tool to fetch the intents first. Then return ONLY the exact intent string and nothing else. Utterance: {item['utterance']}"
+                prompt = f"You must FIRST extract the context, and THEN classify the intent. Utterance: {item['utterance']}"
                 response = await lc_agent.ainvoke({"messages": [("user", prompt)]})
                 
                 elapsed = time.time() - start_time
@@ -155,7 +207,6 @@ async def main():
                 else:
                     predicted_intent = str(content).strip()
                     
-                # Clean markdown or common prefixes
                 predicted_intent = predicted_intent.replace("**", "").replace("`", "")
                 for intent in AVAILABLE_INTENTS:
                     if intent in predicted_intent:
@@ -163,20 +214,20 @@ async def main():
                         break
                 
                 true_intent = item["true_intent"]
-                    
                 correct = int(predicted_intent == true_intent)
                 
-                # Extract tokens
-                toks = 0
+                # Add agent's ReAct loop tokens
+                agent_toks = 0
                 if "messages" in response:
                     for msg in response["messages"]:
                         if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                            toks += msg.usage_metadata.get("input_tokens", 0)
-                            toks += msg.usage_metadata.get("output_tokens", 0)
+                            agent_toks += msg.usage_metadata.get("input_tokens", 0)
+                            agent_toks += msg.usage_metadata.get("output_tokens", 0)
                 
-                return {"elapsed": elapsed, "correct": correct, "failure": 0, "tokens": toks}
+                total_toks = agent_toks + lc_tokens_var.get()
+                
+                return {"elapsed": elapsed, "correct": correct, "failure": 0, "tokens": total_toks}
             except Exception as e:
-                print(f"LangChain error: {e}")
                 return {"elapsed": time.time() - start_time, "correct": 0, "failure": 1, "tokens": 0}
 
     lc_wall_start = time.time()
@@ -196,7 +247,7 @@ async def main():
     
     df = pd.DataFrame([
         {
-            "System": "Sparsi (Structured)",
+            "System": "Sparsi (Multi-Step DAG)",
             "Accuracy": f"{(results['sparsi']['correct'] / args.samples) * 100:.2f}%",
             "Avg Latency (s)": f"{(results['sparsi']['total_time'] / args.samples):.2f}",
             "Wall Time (s)": f"{results['sparsi']['wall_time']:.2f}",
@@ -204,7 +255,7 @@ async def main():
             "Failures": results["sparsi"]["failures"]
         },
         {
-            "System": "LangChain (Agentic)",
+            "System": "LangChain (ReAct Agent)",
             "Accuracy": f"{(results['langchain']['correct'] / args.samples) * 100:.2f}%",
             "Avg Latency (s)": f"{(results['langchain']['total_time'] / args.samples):.2f}",
             "Wall Time (s)": f"{results['langchain']['wall_time']:.2f}",
