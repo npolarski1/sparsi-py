@@ -8,6 +8,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 from typing import Any, Dict, Optional
 import contextvars
+import json
 
 # Sparsi imports
 from dagor import Builder, Engine, Reporter, Operator, register_operator, Input, Output
@@ -25,7 +26,7 @@ if "GEMINI_API_KEY" not in os.environ and "GOOGLE_API_KEY" not in os.environ:
     print("Warning: Neither GEMINI_API_KEY nor GOOGLE_API_KEY is set. Execution might fail.")
 
 # -------------------------------------------------------------------
-# INTENT DEFINITIONS
+# INTENT DEFINITIONS & GROUND TRUTH RULES
 # -------------------------------------------------------------------
 AVAILABLE_INTENTS = [
     "cancel_order", "change_order", "change_shipping_address",
@@ -40,100 +41,269 @@ AVAILABLE_INTENTS = [
 ]
 INTENT_LIST_STR = ", ".join(AVAILABLE_INTENTS)
 
+
+def get_mock_user_profile(utterance: str) -> dict:
+    import hashlib
+    token = hashlib.md5(utterance.encode()).hexdigest()[:16]
+    return {
+        "user_email": "customer@example.com",
+        "account_status": "active",
+        "metadata": {
+            "security_token": token,
+            "session_id": "sess_" + token[:8]
+        },
+        "loyalty": {"tier": "gold", "points": 1450},
+        "preferences": {"language": "en", "notifications": True}
+    }
+
+def get_true_policy(intent: str) -> str:
+    """Deterministic rule to calculate the true policy action based on intent."""
+    escalate_intents = ["complaint", "payment_issue", "contact_human_agent"]
+    reject_intents = ["cancel_order", "get_refund"]
+    
+    if intent in escalate_intents:
+        return "escalate"
+    elif intent in reject_intents:
+        return "reject"
+    else:
+        return "standard_process"
+
+async def evaluate_response(utterance: str, intent: str, policy: str, email: str, expected_token: str) -> bool:
+    """LLM-as-a-Judge to evaluate if the drafted email is accurate and appropriate."""
+    if not email:
+        return False
+    if expected_token not in email:
+        return False
+    llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash", temperature=0)
+    prompt = f"""You are a strict Judge evaluating a customer support email.
+UTTERANCE: '{utterance}'
+EXPECTED INTENT: '{intent}'
+EXPECTED POLICY ACTION: '{policy}'
+DRAFT EMAIL TO EVALUATE: '{email}'
+
+Does the draft email politely address the user's utterance, reflect the expected intent, and follow the expected policy action?
+Respond with exactly one word: PASS or FAIL."""
+    try:
+        res = await llm.ainvoke(prompt)
+        content = res.content
+        if isinstance(content, list):
+            text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            text_content = " ".join(text_parts)
+        else:
+            text_content = str(content)
+        text_content = text_content.strip().upper()
+        return "PASS" in text_content
+    except Exception as e:
+        print(f"Judge error: {e}")
+        return False
+
 # -------------------------------------------------------------------
 # SPARSI WORKFLOW (Context-Aware Multi-Step DAG)
 # -------------------------------------------------------------------
 
-@register_operator("FormatContextOp")
-class FormatContextOp(Operator, BaseModel):
+
+@register_operator("FetchUserContextOp")
+class FetchUserContextOp(Operator, BaseModel):
     model_config = ConfigDict(extra="allow")
     utterance: Input = None
-    context: Input = None
+    result: Output = None
+    async def run(self, ctx: Any) -> None:
+        self.result = get_mock_user_profile(self.utterance)
+
+@register_operator("SendEmailOp")
+class SendEmailOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    intent_json: Input = None
+    policy_json: Input = None
+    draft_json: Input = None
+    user_profile: Input = None
     result: Output = None
     
     async def run(self, ctx: Any) -> None:
-        self.result = f"UTTERANCE: {self.utterance}\nCONTEXT: {self.context}"
+        intent = self.intent_json.get("intent", "") if isinstance(self.intent_json, dict) else ""
+        policy = self.policy_json.get("policy_action", "") if isinstance(self.policy_json, dict) else ""
+        draft = self.draft_json.get("draft_email", "") if isinstance(self.draft_json, dict) else ""
+        self.result = {"intent": intent, "policy_action": policy, "draft_email": draft, "user_profile": self.user_profile}
 
-@register_operator("SumTokensOp")
-class SumTokensOp(Operator, BaseModel):
+@register_operator("FormatIntentContextOp")
+class FormatIntentContextOp(Operator, BaseModel):
     model_config = ConfigDict(extra="allow")
-    in1: Input = None; out1: Input = None
-    in2: Input = None; out2: Input = None
+    utterance: Input = None
+    profile: Input = None
+    sentiment: Input = None
+    result: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        self.result = f"UTTERANCE: {self.utterance}\\nPROFILE: {self.profile}\\nSENTIMENT: {self.sentiment}"
+
+@register_operator("FormatPolicyContextOp")
+
+class FormatPolicyContextOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    intent: Input = None
+    sentiment: Input = None
+    result: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        self.result = f"INTENT: {self.intent}\nSENTIMENT: {self.sentiment}"
+
+@register_operator("FormatDraftContextOp")
+class FormatDraftContextOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    utterance: Input = None
+    intent: Input = None
+    policy: Input = None
+    profile: Input = None
+    result: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        self.result = f"UTTERANCE: {self.utterance}\nINTENT: {self.intent}\nPOLICY: {self.policy}\nPROFILE: {self.profile}"
+
+@register_operator("Sum4TokensOp")
+class Sum4TokensOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    in2: Input = None
+    out2: Input = None
+    in3: Input = None
+    out3: Input = None
+    in4: Input = None
+    out4: Input = None
+    in5: Input = None
+    out5: Input = None
     total_in: Output = None
     total_out: Output = None
     
     async def run(self, ctx: Any) -> None:
-        self.total_in = sum(filter(None, [self.in1, self.in2]))
-        self.total_out = sum(filter(None, [self.out1, self.out2]))
+        self.total_in = sum(filter(None, [self.in2, self.in3, self.in4, self.in5]))
+        self.total_out = sum(filter(None, [self.out2, self.out3, self.out4, self.out5]))
 
 def build_sparsi_graph():
-    b = Builder("intent_classifier")
+    b = Builder("advanced_triage")
     b.vertex("input").op("ContextValOp").params({"key": "utterance"}).output("result", "raw_utterance")
     
-    # Node 1: Extract Context
-    b.vertex("extract_ctx").op("AIExtractMapOp").params({
+    # 1. Fetch Context
+    b.vertex("fetch_user_context").op("FetchUserContextOp") \
+      .input("utterance", "raw_utterance") \
+      .output("result", "user_profile")
+      
+    # 2. Analyze Sentiment
+    b.vertex("analyze_sentiment").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": "1. 'tone': string. 2. 'language': string. 3. 'key_entities': list of strings"
+        "operation": "Analyze sentiment (positive/neutral/negative) and assign an urgency_score (1-5)."
     }).input("input", "raw_utterance") \
-      .output("result", "ctx_json").output("usage_input_tokens", "in1").output("usage_output_tokens", "out1")
+      .output("result", "sentiment_json").output("usage_input_tokens", "in2").output("usage_output_tokens", "out2")
       
-    # Helper Node: Format
-    b.vertex("format").op("FormatContextOp") \
-      .input("utterance", "raw_utterance").input("context", "ctx_json") \
-      .output("result", "formatted_input")
-      
-    # Node 2: Classify Intent
-    b.vertex("classify").op("AIExtractMapOp").params({
+    # Helper: Format Intent Context
+    b.vertex("format_intent_ctx").op("FormatIntentContextOp") \
+      .input("utterance", "raw_utterance").input("profile", "user_profile").input("sentiment", "sentiment_json") \
+      .output("result", "intent_ctx")
+
+    # 3. Classify Intent
+    b.vertex("classify_intent").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": f"Using the provided UTTERANCE and CONTEXT, classify the intent. 1. 'intent': EXACTLY one of {INTENT_LIST_STR}"
-    }).input("input", "formatted_input") \
-      .output("result", "llm_json").output("usage_input_tokens", "in2").output("usage_output_tokens", "out2")
+        "operation": f"Using the provided context, classify the intent. 1. 'intent': EXACTLY one of {INTENT_LIST_STR}"
+    }).input("input", "intent_ctx") \
+      .output("result", "intent_json").output("usage_input_tokens", "in3").output("usage_output_tokens", "out3")
       
-    # Helper Node: Tokens
-    b.vertex("sum_tokens").op("SumTokensOp") \
-        .input("in1", "in1").input("out1", "out1") \
+    # Helper: Format Policy Context
+    b.vertex("format_policy_ctx").op("FormatPolicyContextOp") \
+      .input("intent", "intent_json").input("sentiment", "sentiment_json") \
+      .output("result", "policy_ctx")
+
+    # 4. Check Policy
+    b.vertex("check_policy").op("AIExtractMapOp").params({
+        "model": "gemini-3.1-flash-lite",
+        "operation": "Given the INTENT and SENTIMENT (including urgency_score), determine the policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'. Return a dictionary with 'policy_action'."
+    }).input("input", "policy_ctx") \
+      .output("result", "policy_json").output("usage_input_tokens", "in4").output("usage_output_tokens", "out4")
+
+    # Helper: Format Draft Context
+    b.vertex("format_draft_ctx").op("FormatDraftContextOp") \
+      .input("utterance", "raw_utterance").input("intent", "intent_json").input("policy", "policy_json").input("profile", "user_profile") \
+      .output("result", "draft_ctx")
+
+    # 5. Draft Response
+    b.vertex("draft_response").op("AIExtractMapOp").params({
+        "model": "gemini-3.1-flash-lite",
+        "operation": "Given the UTTERANCE, INTENT, POLICY action, and PROFILE, draft a polite customer support email response. The email MUST end with 'Security Token: [token from metadata]'. Return a dictionary with 'draft_email'."
+    }).input("input", "draft_ctx") \
+      .output("result", "draft_json").output("usage_input_tokens", "in5").output("usage_output_tokens", "out5")
+      
+    # Helper: Combine Results
+    b.vertex("combine_results").op("SendEmailOp") \
+      .input("intent_json", "intent_json").input("policy_json", "policy_json").input("draft_json", "draft_json").input("user_profile", "user_profile") \
+      .output("result", "final_result")
+
+    # Helper: Sum Tokens
+    b.vertex("sum_tokens").op("Sum4TokensOp") \
         .input("in2", "in2").input("out2", "out2") \
+        .input("in3", "in3").input("out3", "out3") \
+        .input("in4", "in4").input("out4", "out4") \
+        .input("in5", "in5").input("out5", "out5") \
         .output("total_in", "in_toks").output("total_out", "out_toks")
         
     return b.build()
 
 async def run_sparsi(engine: Engine, utterance: str) -> tuple[dict, int, int]:
     await engine.run({"utterance": utterance})
-    llm_json, _ = engine.get_output("llm_json")
+    final_result, _ = engine.get_output("final_result")
     in_toks, _ = engine.get_output("in_toks")
     out_toks, _ = engine.get_output("out_toks")
     
-    extracted = llm_json
-    return extracted or {}, in_toks or 0, out_toks or 0
+    return final_result or {}, in_toks or 0, out_toks or 0
 
 # -------------------------------------------------------------------
 # LANGCHAIN AGENT (Multi-Step ReAct)
 # -------------------------------------------------------------------
 lc_tokens_var = contextvars.ContextVar("lc_tokens", default=0)
 
-@tool
-async def extract_context(utterance: str) -> str:
-    """Always use this tool FIRST to extract the tone, language, and key entities of the utterance."""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    res = await llm.ainvoke(f"Analyze tone, language, and key entities of: {utterance}")
+def track_tokens(res):
     if hasattr(res, "usage_metadata") and res.usage_metadata:
         toks = res.usage_metadata.get("input_tokens", 0) + res.usage_metadata.get("output_tokens", 0)
         lc_tokens_var.set(lc_tokens_var.get() + toks)
+
+lc_profile_var = contextvars.ContextVar("lc_profile", default={})
+
+@tool
+def fetch_user_context(utterance: str) -> str:
+    """Always use this tool FIRST. Fetch the complex JSON user profile for the customer."""
+    import json
+    return json.dumps(get_mock_user_profile(utterance))
+
+@tool
+def send_email(body: str, user_profile: dict) -> str:
+    """Always use this tool FIFTH. Send the drafted email to the customer. You MUST pass the exact user_profile dictionary you fetched."""
+    lc_profile_var.set(user_profile)
+    return "Email sent successfully."
+
+
+@tool
+async def analyze_sentiment(utterance: str) -> str:
+    """Always use this tool SECOND. Analyze sentiment and assign an urgency_score (1-5)."""
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
+    res = await llm.ainvoke(f"Analyze sentiment and assign an urgency_score (1-5) for: {utterance}")
+    track_tokens(res)
     return res.content
 
 @tool
-async def classify_intent(utterance: str, context: str) -> str:
-    """Use this tool SECOND. Provide the original utterance and the context you extracted to classify the intent."""
+async def classify_intent(utterance: str, info: str, sentiment: str) -> str:
+    """Always use this tool THIRD. Given the utterance, extracted info, and sentiment, classify the intent."""
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    res = await llm.ainvoke(f"Given UTTERANCE: '{utterance}' and CONTEXT: '{context}', classify intent into EXACTLY one of: {INTENT_LIST_STR}")
-    if hasattr(res, "usage_metadata") and res.usage_metadata:
-        toks = res.usage_metadata.get("input_tokens", 0) + res.usage_metadata.get("output_tokens", 0)
-        lc_tokens_var.set(lc_tokens_var.get() + toks)
+    res = await llm.ainvoke(f"Given UTTERANCE: '{utterance}', INFO: '{info}', SENTIMENT: '{sentiment}', classify intent into EXACTLY one of: {INTENT_LIST_STR}")
+    track_tokens(res)
+    return res.content
+
+@tool
+async def check_policy(intent: str, sentiment: str) -> str:
+    """Always use this tool FOURTH. Given the intent and sentiment (urgency), determine policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'."""
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
+    res = await llm.ainvoke(f"Given INTENT: '{intent}' and SENTIMENT: '{sentiment}', determine policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'.")
+    track_tokens(res)
     return res.content
 
 def build_langchain_agent():
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    tools = [extract_context, classify_intent]
+    tools = [fetch_user_context, analyze_sentiment, classify_intent, check_policy, send_email]
     agent_executor = create_react_agent(llm, tools)
     return agent_executor
 
@@ -141,8 +311,8 @@ def build_langchain_agent():
 # BENCHMARK RUNNER
 # -------------------------------------------------------------------
 async def main():
-    parser = argparse.ArgumentParser(description="Benchmark Sparsi vs LangChain")
-    parser.add_argument("--samples", type=int, default=500, help="Number of samples to process")
+    parser = argparse.ArgumentParser(description="Benchmark Sparsi vs LangChain - Advanced Triage")
+    parser.add_argument("--samples", type=int, default=50, help="Number of samples to process")
     args = parser.parse_args()
 
     print(f"Loading {args.samples} samples from bitext/Bitext-customer-support-llm-chatbot-training-dataset...")
@@ -159,20 +329,36 @@ async def main():
     }
 
     print("\n--- Running Sparsi Benchmark ---")
-    sparsi_sem = asyncio.Semaphore(60)
+    sparsi_sem = asyncio.Semaphore(20)
     
     async def run_sparsi_item(item):
         async with sparsi_sem:
             start_time = time.time()
             try:
                 engine = Engine(sparsi_graph, reporter=None)
-                extracted_json, in_toks, out_toks = await run_sparsi(engine, item["utterance"])
+                final_result, in_toks, out_toks = await run_sparsi(engine, item["utterance"])
                 elapsed = time.time() - start_time
                 
-                predicted_intent = extracted_json.get("intent", "")
+                predicted_intent = final_result.get("intent", "")
+                predicted_policy = final_result.get("policy_action", "")
+                predicted_email = final_result.get("draft_email", "")
+                
                 true_intent = item["true_intent"]
-                correct = int(predicted_intent == true_intent)
-                return {"elapsed": elapsed, "correct": correct, "failure": 0, "tokens": in_toks + out_toks}
+                true_policy = get_true_policy(true_intent)
+                
+                # Check all components for full pipeline accuracy
+                intent_correct = int(predicted_intent == true_intent)
+                policy_correct = int(predicted_policy == true_policy)
+                
+                predicted_profile = final_result.get("user_profile", {})
+                true_profile = get_mock_user_profile(item["utterance"])
+                profile_correct = 1 if predicted_profile == true_profile else 0
+                
+                response_correct = 1 if await evaluate_response(item["utterance"], true_intent, true_policy, predicted_email, true_profile["metadata"]["security_token"]) else 0
+                pipeline_correct = 1 if (intent_correct and policy_correct and response_correct and profile_correct) else 0
+                print(f"Sparsi [Intent: {intent_correct}] [Policy: {policy_correct}] [Profile: {profile_correct}] [Response: {response_correct}]")
+                
+                return {"elapsed": elapsed, "correct": pipeline_correct, "failure": 0, "tokens": in_toks + out_toks}
             except Exception as e:
                 return {"elapsed": time.time() - start_time, "correct": 0, "failure": 1, "tokens": 0}
 
@@ -187,7 +373,7 @@ async def main():
     results["sparsi"]["wall_time"] = time.time() - sparsi_wall_start
 
     print("\n--- Running LangChain Benchmark ---")
-    lc_sem = asyncio.Semaphore(60)
+    lc_sem = asyncio.Semaphore(20)
     
     async def run_lc_item(item):
         async with lc_sem:
@@ -195,26 +381,64 @@ async def main():
             # Reset contextvar for this run
             lc_tokens_var.set(0)
             try:
-                prompt = f"You must FIRST extract the context, and THEN classify the intent. Utterance: {item['utterance']}"
-                response = await lc_agent.ainvoke({"messages": [("user", prompt)]})
+                prompt = f"""You must process the following user utterance: '{item['utterance']}'.
+You MUST strictly follow this exact order of tool calls:
+1. fetch_user_context
+2. analyze_sentiment
+3. classify_intent
+4. check_policy
+
+Once you have completed the first 4 tool calls, draft a polite customer support email response based on the utterance, intent, policy action, and the user profile. The email MUST end with 'Security Token: [token from metadata]'.
+Then, as your 5th and final tool call, you MUST call 'send_email' with your drafted email as 'body' and the exact user profile dictionary you fetched as 'user_profile'.
+Return your final answer as a JSON object with exactly three keys: 'intent', 'policy_action', and 'draft_email' (the email you sent)."""
                 
+                response = await lc_agent.ainvoke({"messages": [("user", prompt)]})
                 elapsed = time.time() - start_time
                 
                 content = response["messages"][-1].content
                 if isinstance(content, list):
                     text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                    predicted_intent = " ".join(text_parts).strip()
+                    final_text = " ".join(text_parts).strip()
                 else:
-                    predicted_intent = str(content).strip()
-                    
-                predicted_intent = predicted_intent.replace("**", "").replace("`", "")
+                    final_text = str(content).strip()
+                
+                # Extract predictions from the text response
+                predicted_intent = ""
                 for intent in AVAILABLE_INTENTS:
-                    if intent in predicted_intent:
+                    if intent in final_text:
                         predicted_intent = intent
+                        break
+                        
+                predicted_policy = ""
+                for policy in ["escalate", "standard_process", "reject"]:
+                    if policy in final_text:
+                        predicted_policy = policy
                         break
                 
                 true_intent = item["true_intent"]
-                correct = int(predicted_intent == true_intent)
+                true_policy = get_true_policy(true_intent)
+                
+                intent_correct = int(predicted_intent == true_intent)
+                policy_correct = int(predicted_policy == true_policy)
+                
+                # Attempt to extract draft email (everything after 'draft_email': if present)
+                predicted_email = ""
+                try:
+                    if "{" in final_text and "}" in final_text:
+                        json_str = final_text[final_text.find("{"):final_text.rfind("}")+1]
+                        parsed = json.loads(json_str)
+                        predicted_email = parsed.get("draft_email", "")
+                except:
+                    predicted_email = final_text
+                
+                true_profile = get_mock_user_profile(item["utterance"])
+                response_correct = 1 if await evaluate_response(item["utterance"], true_intent, true_policy, predicted_email, true_profile["metadata"]["security_token"]) else 0
+                
+                actual_profile = lc_profile_var.get()
+                profile_correct = 1 if actual_profile == true_profile else 0
+                
+                pipeline_correct = 1 if (intent_correct and policy_correct and response_correct and profile_correct) else 0
+                print(f"LC [Intent: {intent_correct}] [Policy: {policy_correct}] [Profile: {profile_correct}] [Response: {response_correct}]")
                 
                 # Add agent's ReAct loop tokens
                 agent_toks = 0
@@ -226,7 +450,7 @@ async def main():
                 
                 total_toks = agent_toks + lc_tokens_var.get()
                 
-                return {"elapsed": elapsed, "correct": correct, "failure": 0, "tokens": total_toks}
+                return {"elapsed": elapsed, "correct": pipeline_correct, "failure": 0, "tokens": total_toks}
             except Exception as e:
                 return {"elapsed": time.time() - start_time, "correct": 0, "failure": 1, "tokens": 0}
 
@@ -248,7 +472,7 @@ async def main():
     df = pd.DataFrame([
         {
             "System": "Sparsi (Multi-Step DAG)",
-            "Accuracy": f"{(results['sparsi']['correct'] / args.samples) * 100:.2f}%",
+            "Pipeline Accuracy": f"{(results['sparsi']['correct'] / args.samples) * 100:.2f}%",
             "Avg Latency (s)": f"{(results['sparsi']['total_time'] / args.samples):.2f}",
             "Wall Time (s)": f"{results['sparsi']['wall_time']:.2f}",
             "Total Tokens": results["sparsi"]["tokens"],
@@ -256,7 +480,7 @@ async def main():
         },
         {
             "System": "LangChain (ReAct Agent)",
-            "Accuracy": f"{(results['langchain']['correct'] / args.samples) * 100:.2f}%",
+            "Pipeline Accuracy": f"{(results['langchain']['correct'] / args.samples) * 100:.2f}%",
             "Avg Latency (s)": f"{(results['langchain']['total_time'] / args.samples):.2f}",
             "Wall Time (s)": f"{results['langchain']['wall_time']:.2f}",
             "Total Tokens": results["langchain"]["tokens"],
