@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional
 import contextvars
 import json
 
+with open("prompts.json", "r") as f:
+    PROMPTS = json.load(f)
+
 # Sparsi imports
 from dagor import Builder, Engine, Reporter, Operator, register_operator, Input, Output
 from pydantic import BaseModel, ConfigDict
@@ -125,17 +128,6 @@ class SendEmailOp(Operator, BaseModel):
         draft = self.draft_json.get("draft_email", "") if isinstance(self.draft_json, dict) else ""
         self.result = {"intent": intent, "policy_action": policy, "draft_email": draft, "user_profile": self.user_profile}
 
-@register_operator("FormatIntentContextOp")
-class FormatIntentContextOp(Operator, BaseModel):
-    model_config = ConfigDict(extra="allow")
-    utterance: Input = None
-    profile: Input = None
-    sentiment: Input = None
-    result: Output = None
-    
-    async def run(self, ctx: Any) -> None:
-        self.result = f"UTTERANCE: {self.utterance}\\nPROFILE: {self.profile}\\nSENTIMENT: {self.sentiment}"
-
 @register_operator("FormatPolicyContextOp")
 
 class FormatPolicyContextOp(Operator, BaseModel):
@@ -154,10 +146,11 @@ class FormatDraftContextOp(Operator, BaseModel):
     intent: Input = None
     policy: Input = None
     profile: Input = None
+    sentiment: Input = None
     result: Output = None
     
     async def run(self, ctx: Any) -> None:
-        self.result = f"UTTERANCE: {self.utterance}\nINTENT: {self.intent}\nPOLICY: {self.policy}\nPROFILE: {self.profile}"
+        self.result = f"UTTERANCE: {self.utterance}\nINTENT: {self.intent}\nPOLICY: {self.policy}\nPROFILE: {self.profile}\nSENTIMENT: {self.sentiment}"
 
 @register_operator("Sum4TokensOp")
 class Sum4TokensOp(Operator, BaseModel):
@@ -189,20 +182,15 @@ def build_sparsi_graph():
     # 2. Analyze Sentiment
     b.vertex("analyze_sentiment").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": "Analyze sentiment (positive/neutral/negative) and assign an urgency_score (1-5)."
+        "operation": PROMPTS["sparsi_sentiment"]
     }).input("input", "raw_utterance") \
       .output("result", "sentiment_json").output("usage_input_tokens", "in2").output("usage_output_tokens", "out2")
       
-    # Helper: Format Intent Context
-    b.vertex("format_intent_ctx").op("FormatIntentContextOp") \
-      .input("utterance", "raw_utterance").input("profile", "user_profile").input("sentiment", "sentiment_json") \
-      .output("result", "intent_ctx")
-
     # 3. Classify Intent
     b.vertex("classify_intent").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": f"Using the provided context, classify the intent. 1. 'intent': EXACTLY one of {INTENT_LIST_STR}"
-    }).input("input", "intent_ctx") \
+        "operation": PROMPTS["sparsi_intent"].replace("{INTENT_LIST_STR}", INTENT_LIST_STR)
+    }).input("input", "raw_utterance") \
       .output("result", "intent_json").output("usage_input_tokens", "in3").output("usage_output_tokens", "out3")
       
     # Helper: Format Policy Context
@@ -213,19 +201,19 @@ def build_sparsi_graph():
     # 4. Check Policy
     b.vertex("check_policy").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": "Given the INTENT and SENTIMENT (including urgency_score), determine the policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'. Return a dictionary with 'policy_action'."
+        "operation": PROMPTS["sparsi_policy"]
     }).input("input", "policy_ctx") \
       .output("result", "policy_json").output("usage_input_tokens", "in4").output("usage_output_tokens", "out4")
 
     # Helper: Format Draft Context
     b.vertex("format_draft_ctx").op("FormatDraftContextOp") \
-      .input("utterance", "raw_utterance").input("intent", "intent_json").input("policy", "policy_json").input("profile", "user_profile") \
+      .input("utterance", "raw_utterance").input("intent", "intent_json").input("policy", "policy_json").input("profile", "user_profile").input("sentiment", "sentiment_json") \
       .output("result", "draft_ctx")
 
     # 5. Draft Response
     b.vertex("draft_response").op("AIExtractMapOp").params({
         "model": "gemini-3.1-flash-lite",
-        "operation": "Given the UTTERANCE, INTENT, POLICY action, and PROFILE, draft a polite customer support email response. The email MUST end with 'Security Token: [token from metadata]'. Return a dictionary with 'draft_email'."
+        "operation": PROMPTS["sparsi_draft"]
     }).input("input", "draft_ctx") \
       .output("result", "draft_json").output("usage_input_tokens", "in5").output("usage_output_tokens", "out5")
       
@@ -262,48 +250,25 @@ def track_tokens(res):
         toks = res.usage_metadata.get("input_tokens", 0) + res.usage_metadata.get("output_tokens", 0)
         lc_tokens_var.set(lc_tokens_var.get() + toks)
 
-lc_profile_var = contextvars.ContextVar("lc_profile", default={})
+lc_profile_var = contextvars.ContextVar("lc_profile")
 
 @tool
-def fetch_user_context(utterance: str) -> str:
-    """Always use this tool FIRST. Fetch the complex JSON user profile for the customer."""
+async def fetch_user_context(utterance: str) -> str:
+    """Fetch the complex JSON user profile for the customer using their utterance."""
     import json
     return json.dumps(get_mock_user_profile(utterance))
 
 @tool
-def send_email(body: str, user_profile: dict) -> str:
-    """Always use this tool FIFTH. Send the drafted email to the customer. You MUST pass the exact user_profile dictionary you fetched."""
-    lc_profile_var.set(user_profile)
+async def send_email(body: str, user_profile: dict) -> str:
+    """Send the drafted email to the customer. You MUST pass the exact user_profile dictionary you fetched."""
+    state = lc_profile_var.get()
+    state.clear()
+    state.update(user_profile)
     return "Email sent successfully."
-
-
-@tool
-async def analyze_sentiment(utterance: str) -> str:
-    """Always use this tool SECOND. Analyze sentiment and assign an urgency_score (1-5)."""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    res = await llm.ainvoke(f"Analyze sentiment and assign an urgency_score (1-5) for: {utterance}")
-    track_tokens(res)
-    return res.content
-
-@tool
-async def classify_intent(utterance: str, info: str, sentiment: str) -> str:
-    """Always use this tool THIRD. Given the utterance, extracted info, and sentiment, classify the intent."""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    res = await llm.ainvoke(f"Given UTTERANCE: '{utterance}', INFO: '{info}', SENTIMENT: '{sentiment}', classify intent into EXACTLY one of: {INTENT_LIST_STR}")
-    track_tokens(res)
-    return res.content
-
-@tool
-async def check_policy(intent: str, sentiment: str) -> str:
-    """Always use this tool FOURTH. Given the intent and sentiment (urgency), determine policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'."""
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    res = await llm.ainvoke(f"Given INTENT: '{intent}' and SENTIMENT: '{sentiment}', determine policy_action ('escalate', 'standard_process', 'reject'). Rules: if intent is in ['complaint', 'payment_issue', 'contact_human_agent'] then 'escalate'. If intent is in ['cancel_order', 'get_refund'] then 'reject'. Otherwise 'standard_process'.")
-    track_tokens(res)
-    return res.content
 
 def build_langchain_agent():
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
-    tools = [fetch_user_context, analyze_sentiment, classify_intent, check_policy, send_email]
+    tools = [fetch_user_context, send_email]
     agent_executor = create_react_agent(llm, tools)
     return agent_executor
 
@@ -380,17 +345,10 @@ async def main():
             start_time = time.time()
             # Reset contextvar for this run
             lc_tokens_var.set(0)
+            profile_state = {}
+            lc_profile_var.set(profile_state)
             try:
-                prompt = f"""You must process the following user utterance: '{item['utterance']}'.
-You MUST strictly follow this exact order of tool calls:
-1. fetch_user_context
-2. analyze_sentiment
-3. classify_intent
-4. check_policy
-
-Once you have completed the first 4 tool calls, draft a polite customer support email response based on the utterance, intent, policy action, and the user profile. The email MUST end with 'Security Token: [token from metadata]'.
-Then, as your 5th and final tool call, you MUST call 'send_email' with your drafted email as 'body' and the exact user profile dictionary you fetched as 'user_profile'.
-Return your final answer as a JSON object with exactly three keys: 'intent', 'policy_action', and 'draft_email' (the email you sent)."""
+                prompt = PROMPTS["langchain_prompt"].replace("{utterance}", item['utterance']).replace("{INTENT_LIST_STR}", INTENT_LIST_STR)
                 
                 response = await lc_agent.ainvoke({"messages": [("user", prompt)]})
                 elapsed = time.time() - start_time
@@ -434,7 +392,7 @@ Return your final answer as a JSON object with exactly three keys: 'intent', 'po
                 true_profile = get_mock_user_profile(item["utterance"])
                 response_correct = 1 if await evaluate_response(item["utterance"], true_intent, true_policy, predicted_email, true_profile["metadata"]["security_token"]) else 0
                 
-                actual_profile = lc_profile_var.get()
+                actual_profile = profile_state
                 profile_correct = 1 if actual_profile == true_profile else 0
                 
                 pipeline_correct = 1 if (intent_correct and policy_correct and response_correct and profile_correct) else 0

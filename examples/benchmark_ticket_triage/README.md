@@ -14,50 +14,48 @@ Real-world pipelines rarely classify intent blindly. This benchmark tests a stri
 We use the `bitext/Bitext-customer-support-llm-chatbot-training-dataset` from Hugging Face.
 
 ## Systems Compared
-1. **Sparsi (Multi-Step DAG)**: Uses a compiled workflow graph (`dagor`) and `gemini-3.1-flash-lite` to execute the 5 steps. Each step is represented as a distinct `Operator` node. Sparsi extracts the exact data needed from each node and feeds it sequentially downstream. This deterministic routing guarantees execution order with zero ReAct scratchpad overhead.
-2. **LangChain (ReAct Agent)**: Uses a LangChain `create_react_agent` equipped with 5 tools matching the steps above, and strict system prompt instructions to execute them in exact sequential order. This represents the common dynamic agentic ReAct loop approach.
+1. **Sparsi (Multi-Step DAG)**: Uses a compiled workflow graph (`dagor`) and `gemini-3.1-flash-lite` to execute the 5 steps. Each step is represented as a distinct `Operator` node. The DAG parallelizes independent steps (like Sentiment Analysis and Intent Classification) to minimize the critical path length.
+2. **LangChain (ReAct Agent)**: Uses a LangChain `create_react_agent` equipped with tools matching the steps above, utilizing a goal-oriented system prompt that relies on the agent's native reasoning loop to fulfill the workflow autonomously.
 
 ## How to Run
 
 Ensure your environment variables for `GEMINI_API_KEY` are set.
 
 ```bash
-python main.py --samples 50
+python main.py --samples 100
 ```
 
 You can adjust the number of samples with the `--samples` flag.
 
-## Metrics
-The benchmark measures several performance characteristics. Notably, it measures a strict **Pipeline Accuracy**.
+## Automated Prompt Optimization (Tree Search)
+To ensure both frameworks were evaluated at their absolute maximum potential, we built an automated hyperparameter search script (`auto_optimize.py`) that performed an iterative, multi-generational Tree Search. The script tested radically different prompt structures (Generation 1), identified the winners, and then iteratively performed micro-mutations on those winners (Generation 2 & 3) until the models plateaued.
 
-### Pipeline Accuracy Evaluation
-A pipeline's execution is considered correct **ONLY IF** it correctly executes all three of the major outputs:
-1. **Intent Matching**: The predicted intent string must exactly match the dataset's ground truth intent.
-2. **Policy Matching**: The predicted policy action must exactly match the deterministically generated ground truth policy action. The ground truth rules are:
-   - `escalate` if intent is `complaint`, `payment_issue`, or `contact_human_agent`
-   - `reject` if intent is `cancel_order` or `get_refund`
-   - `standard_process` for all others
-3. **Draft Response Judging**: A completely separate LLM call (`gemini-3.5-flash`) acts as a Judge. It reviews the original utterance, true intent, true policy, and the generated email. It must return a `PASS` (meaning the email politely addressed the user and followed the policy). The time and tokens for this evaluation are **not** counted against the benchmark.
+**Findings from the Optimization Tree Search:**
+- **Sparsi Limits (14.8k tokens)**: In Generation 1, we learned that stripping the prompts down to pure fragmented shorthand (e.g., `intent: ...`) completely broke the LLM's JSON engine, dropping accuracy to 0%. However, by micro-mutating the baseline over 3 generations, we found the mathematical plateau. Sparsi can maintain 100% accuracy using extremely concise, machine-like pseudo-code (e.g. `policy_action: 'escalate' if complaint/payment_issue/contact_human...`).
+- **LangChain Limits (51.8k tokens)**: When we attempted to compress the ReAct agent's prompt into dense markdown or XML tags during Generation 1, its accuracy plummeted to 70-80%. The agent *requires* significant conversational scaffolding to successfully maintain its JSON output schema and follow multi-step constraints (like appending the security token) across its internal thought loop. It plateaued immediately at its baseline.
 
-If any of these three checks fail, the entire sample is marked as a failure for accuracy.
+## Final Results (100 Samples)
 
-### Other Metrics
-- **Avg Latency (s)**: Average time taken per request across the 5 steps.
-- **Total Time (s)**: Total wall-clock processing time for the batch.
-- **Failures**: Number of pipeline crashes or exceptions.
-- **Total Tokens**: The sum of input and output tokens consumed across all benchmarked LLM calls.
+After running the heavily optimized prompts across 100 samples, the performance differences became starkly clear:
 
-### Results
-For a 100 sample test batch, there is a massive disparity in token usage, latency, and accuracy:
+```text
+==========================================
+             BENCHMARK RESULTS            
+==========================================
+                 System Pipeline Accuracy Avg Latency (s) Total Tokens  Failures
+Sparsi (Multi-Step DAG)           100.00%            2.15        78671         0
+LangChain (ReAct Agent)            96.00%            2.63       258050         0
+==========================================
+```
 
-| System | Pipeline Accuracy | Avg Latency (s) | Total Tokens (100 samples) |
-| :--- | :--- | :--- | :--- |
-| Sparsi (Multi-Step DAG) | 100.00% | ~2.59s | ~86,101 |
-| LangChain (ReAct Agent) | 0.00% | ~7.65s | ~681,447 |
+*Note: Pipeline Accuracy requires perfect intent matching, perfect policy matching, and a passing grade from an independent LLM-as-a-judge on the drafted email's formatting and politeness.*
 
-### Conclusion
-When tasked with a realistic 5-step pipeline, Sparsi's deterministic DAG architecture provides an enormous advantage. LangChain's reliance on dynamic ReAct loops causes its token consumption to skyrocket by roughly **8x** due to its expanding history scratchpad, and its latency spikes to nearly **3x** slower than Sparsi.
+## Conclusion
 
-More importantly, LangChain achieves **0.00% pipeline accuracy** because it consistently fails the strict state-passing check. In a ReAct agent, state is simply appended as text to the context scratchpad. The agent receives the complex user profile JSON string from the `fetch_user_context` tool, and is later expected to perfectly reconstruct and pass that exact dictionary into the `send_email` tool. LLMs consistently struggle to perfectly preserve and reconstruct large, nested JSON objects (like the user profile with its generated tokens) across multiple tool calls from their text history.
+When scaling a complex, multi-step AI workflow, the architectural differences between a ReAct agent and a DAG become undeniable:
 
-Sparsi executes the exact same logic sequence but achieves **100.00% accuracy**. This is because its DAG architecture deterministically passes the native Python dictionary object directly between nodes. It never forces the LLM to reconstruct the state from its prompt history, resulting in a perfectly reliable, incredibly fast, and lightweight pipeline.
+1. **Tokens (Cost)**: Sparsi is definitively cheaper, consuming less than 1/3rd of LangChain's tokens (~78k vs ~258k). ReAct agents are inherently token-hungry because they must embed massive system rules, tool schemas, and their own expanding reasoning history into every single iterative loop.
+2. **Latency (Speed)**: Because Sparsi can deterministically trigger independent nodes (like analyzing sentiment and classifying intent) concurrently, it achieves a noticeably faster average response latency per request. 
+3. **Reliability**: Sparsi maintained a flawless **100% accuracy** at scale. Meanwhile, even with its highly conversational (and expensive) baseline prompt, the LangChain ReAct agent occasionally hallucinated or lost track of its formatting constraints during the 100-sample run, dropping to **96% accuracy**. 
+
+For production-grade pipelines where strict adherence to formatting and low latency are critical, Sparsi's deterministic graph execution is significantly more reliable and economical than a dynamic ReAct agent.
