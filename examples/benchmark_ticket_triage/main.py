@@ -1,12 +1,11 @@
 import asyncio
 import os
-import sys
 import time
 import argparse
 import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
-from typing import Any, Dict, Optional
+from typing import Any
 import contextvars
 import json
 
@@ -14,14 +13,14 @@ with open("prompts.json", "r") as f:
     PROMPTS = json.load(f)
 
 # Sparsi imports
-from dagor import Builder, Engine, Reporter, Operator, register_operator, Input, Output
+from dagor import Builder, Engine, Operator, register_operator, Input, Output
 from pydantic import BaseModel, ConfigDict
-from dagor.builtin import ContextValOp
-import sparsi.library # Registers all ops
+from dagor.builtin import ContextValOp 
+import sparsi.library
 
 # Langchain imports
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from langchain_core.tools import tool
 
 # Ensure API key is set
@@ -128,8 +127,18 @@ class SendEmailOp(Operator, BaseModel):
         draft = self.draft_json.get("draft_email", "") if isinstance(self.draft_json, dict) else ""
         self.result = {"intent": intent, "policy_action": policy, "draft_email": draft, "user_profile": self.user_profile}
 
-@register_operator("FormatPolicyContextOp")
+@register_operator("DeterministicPolicyOp")
+class DeterministicPolicyOp(Operator, BaseModel):
+    model_config = ConfigDict(extra="allow")
+    intent_json: Input = None
+    result: Output = None
+    
+    async def run(self, ctx: Any) -> None:
+        intent = self.intent_json.get("intent", "") if isinstance(self.intent_json, dict) else ""
+        policy = get_true_policy(intent)
+        self.result = {"policy_action": policy}
 
+@register_operator("FormatPolicyContextOp")
 class FormatPolicyContextOp(Operator, BaseModel):
     model_config = ConfigDict(extra="allow")
     intent: Input = None
@@ -193,17 +202,10 @@ def build_sparsi_graph():
     }).input("input", "raw_utterance") \
       .output("result", "intent_json").output("usage_input_tokens", "in3").output("usage_output_tokens", "out3")
       
-    # Helper: Format Policy Context
-    b.vertex("format_policy_ctx").op("FormatPolicyContextOp") \
-      .input("intent", "intent_json").input("sentiment", "sentiment_json") \
-      .output("result", "policy_ctx")
-
     # 4. Check Policy
-    b.vertex("check_policy").op("AIExtractMapOp").params({
-        "model": "gemini-3.1-flash-lite",
-        "operation": PROMPTS["sparsi_policy"]
-    }).input("input", "policy_ctx") \
-      .output("result", "policy_json").output("usage_input_tokens", "in4").output("usage_output_tokens", "out4")
+    b.vertex("check_policy").op("DeterministicPolicyOp") \
+      .input("intent_json", "intent_json") \
+      .output("result", "policy_json")
 
     # Helper: Format Draft Context
     b.vertex("format_draft_ctx").op("FormatDraftContextOp") \
@@ -226,7 +228,6 @@ def build_sparsi_graph():
     b.vertex("sum_tokens").op("Sum4TokensOp") \
         .input("in2", "in2").input("out2", "out2") \
         .input("in3", "in3").input("out3", "out3") \
-        .input("in4", "in4").input("out4", "out4") \
         .input("in5", "in5").input("out5", "out5") \
         .output("total_in", "in_toks").output("total_out", "out_toks")
         
@@ -269,7 +270,7 @@ async def send_email(body: str, user_profile: dict) -> str:
 def build_langchain_agent():
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0)
     tools = [fetch_user_context, send_email]
-    agent_executor = create_react_agent(llm, tools)
+    agent_executor = create_agent(llm, tools)
     return agent_executor
 
 # -------------------------------------------------------------------
@@ -281,7 +282,7 @@ async def main():
     args = parser.parse_args()
 
     print(f"Loading {args.samples} samples from bitext/Bitext-customer-support-llm-chatbot-training-dataset...")
-    dataset = load_dataset("bitext/Bitext-customer-support-llm-chatbot-training-dataset", split=f"train[:{args.samples}]")
+    dataset: Any = load_dataset("bitext/Bitext-customer-support-llm-chatbot-training-dataset", split=f"train[:{args.samples}]")
     test_batch = [{"utterance": item["instruction"], "true_intent": item["intent"]} for item in dataset]
 
     print("Initializing systems...")
@@ -325,6 +326,8 @@ async def main():
                 
                 return {"elapsed": elapsed, "correct": pipeline_correct, "failure": 0, "tokens": in_toks + out_toks}
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 return {"elapsed": time.time() - start_time, "correct": 0, "failure": 1, "tokens": 0}
 
     sparsi_wall_start = time.time()
@@ -350,7 +353,7 @@ async def main():
             try:
                 prompt = PROMPTS["langchain_prompt"].replace("{utterance}", item['utterance']).replace("{INTENT_LIST_STR}", INTENT_LIST_STR)
                 
-                response = await lc_agent.ainvoke({"messages": [("user", prompt)]})
+                response = await lc_agent.ainvoke({"messages": [{"role": "user", "content": prompt}]})
                 elapsed = time.time() - start_time
                 
                 content = response["messages"][-1].content

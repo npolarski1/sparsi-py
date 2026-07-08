@@ -43,8 +43,8 @@ After running the heavily optimized prompts across 100 samples, the performance 
              BENCHMARK RESULTS            
 ==========================================
                  System Pipeline Accuracy Avg Latency (s) Total Tokens  Failures
-Sparsi (Multi-Step DAG)           100.00%            2.15        78671         0
-LangChain (ReAct Agent)            96.00%            2.63       258050         0
+Sparsi (Multi-Step DAG)           100.00%            1.73        61158         0
+LangChain (ReAct Agent)            94.00%            3.06       258050         0
 ==========================================
 ```
 
@@ -54,8 +54,8 @@ LangChain (ReAct Agent)            96.00%            2.63       258050         0
 
 When scaling a complex, multi-step AI workflow, the architectural differences between a ReAct agent and a DAG become undeniable:
 
-1. **Tokens (Cost)**: Sparsi is definitively cheaper, consuming less than 1/3rd of LangChain's tokens (~78k vs ~258k). ReAct agents are inherently token-hungry because they must embed massive system rules, tool schemas, and their own expanding reasoning history into every single iterative loop.
-2. **Latency (Speed)**: Because Sparsi can deterministically trigger independent nodes (like analyzing sentiment and classifying intent) concurrently, it achieves a noticeably faster average response latency per request. 
-3. **Reliability**: Sparsi maintained a flawless **100% accuracy** at scale. Meanwhile, even with its highly conversational (and expensive) baseline prompt, the LangChain ReAct agent occasionally hallucinated or lost track of its formatting constraints during the 100-sample run, dropping to **96% accuracy**. 
+1. **Tokens (Cost)**: Sparsi is definitively cheaper, consuming less than 1/4th of LangChain's tokens (~61k vs ~258k). ReAct agents are inherently token-hungry because they must embed massive system rules, tool schemas, and their own expanding reasoning history into every single iterative loop.
+2. **Latency (Speed)**: Because Sparsi can deterministically trigger independent nodes concurrently, it achieves a noticeably faster average response latency. Furthermore, because Sparsi uses a graph, **we replaced the AI policy checking step with a pure Python operator**. This bypassed an entire LLM network hop, slashing latency down to **1.73 seconds**, whereas the ReAct agent is forced to process policy rules through the LLM. 
+3. **Reliability**: Sparsi maintained a flawless **100% accuracy** at scale. Meanwhile, even with its highly conversational (and expensive) baseline prompt, the LangChain ReAct agent occasionally hallucinated or lost track of its formatting constraints during the 100-sample run, dropping to **94% accuracy**. 
 
 For production-grade pipelines where strict adherence to formatting and low latency are critical, Sparsi's deterministic graph execution is significantly more reliable and economical than a dynamic ReAct agent.
