@@ -1,7 +1,5 @@
-import os
 import json
 import subprocess
-import re
 
 # Generation 2 Champions
 BASELINE_SPARSI_SENTIMENT = "Return 'sentiment' (positive/neutral/negative) and 'urgency_score' (1-5)."
