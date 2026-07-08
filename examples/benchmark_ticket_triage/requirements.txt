@@ -1,0 +1,7 @@
+datasets
+langchain
+langchain-google-genai
+langchain-core
+pydantic
+tqdm
+pandas

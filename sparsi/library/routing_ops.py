@@ -8,6 +8,24 @@ from anthropic import AsyncAnthropic
 from google import genai
 from google.genai import types
 
+_anthropic_client = None
+_gemini_client = None
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    return _anthropic_client
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+        _gemini_client = genai.Client(api_key=api_key)
+    return _gemini_client
+
 @register_operator("IfStringEqOp")
 class IfStringEqOp(Operator, BaseModel):
     a: Input = ""
@@ -18,12 +36,16 @@ class IfStringEqOp(Operator, BaseModel):
         pass
 
     async def run(self, ctx: Any) -> None:
+        self.usage_input_tokens = 0
+        self.usage_output_tokens = 0
         self.match = self.a == self.b
 
 @register_operator("ModeSelectOp")
 class ModeSelectOp(Operator, BaseModel):
     input: Input = ""
     result: Output = ""
+    usage_input_tokens: Output = 0
+    usage_output_tokens: Output = 0
     
     categories: Any = [] # Changed from List[str] to Any to avoid strict Pydantic list validation during vertex creation
     max_retries: int = 3
@@ -45,6 +67,8 @@ class ModeSelectOp(Operator, BaseModel):
         self.model = params.get("model", self.model)
 
     async def run(self, ctx: Any) -> None:
+        self.usage_input_tokens = 0
+        self.usage_output_tokens = 0
         if not self.categories:
             raise ValueError("ModeSelectOp: 'categories' param is required")
         
@@ -59,9 +83,12 @@ class ModeSelectOp(Operator, BaseModel):
         for attempt in range(self.max_retries + 1):
             try:
                 if self.provider == "claude" or "claude" in self.model:
-                    res_text = await self._call_anthropic(system_text, prompt)
+                    res_text, i_toks, o_toks = await self._call_anthropic(system_text, prompt)
                 else:
-                    res_text = await self._run_gemini(system_text, prompt)
+                    res_text, i_toks, o_toks = await self._run_gemini(system_text, prompt)
+                
+                self.usage_input_tokens += i_toks
+                self.usage_output_tokens += o_toks
                 
                 result = res_text.strip()
                 if result in cat_set:
@@ -78,29 +105,25 @@ class ModeSelectOp(Operator, BaseModel):
         raise ValueError(f"ModeSelectOp: all {self.max_retries + 1} attempts failed")
 
     async def _call_anthropic(self, system: str, prompt: str) -> str:
-        client = AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        client = _get_anthropic_client()
         response = await client.messages.create(
             model=self.model,
             max_tokens=64,
             system=system,
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.content[0].text
+        return response.content[0].text, response.usage.input_tokens, response.usage.output_tokens
 
     async def _run_gemini(self, system: str, prompt: str):
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("Gemini requires either GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
-
-        client = genai.Client(api_key=api_key)
+        client = _get_gemini_client()
 
         config = types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=64,
         )
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=self.model,
             contents=prompt,
             config=config,
         )
-        return response.text
+        return response.text, response.usage_metadata.prompt_token_count if response.usage_metadata else 0, response.usage_metadata.candidates_token_count if response.usage_metadata else 0
