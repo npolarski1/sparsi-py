@@ -27,6 +27,21 @@ Today's agents are interpreters. They re-derive the same routines — classify, 
 
 ## Quick Start
 
+---
+
+## Benchmarks
+
+Sparsi's deterministic DAG architecture drastically outperforms traditional ReAct agents running the exact same LLM prompts. Below are the benchmark results for 100 samples on the Ticket Triage task:
+
+| System | Accuracy | Avg Latency (s) | Wall Time (s) | Total Tokens | Failures |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Sparsi (Multi-Step DAG)** | **100.00%** | **1.58** | **29.01** | **61229** | **0** |
+| LangChain (ReAct Agent) | 96.00% | 3.41 | 108.11 | 258050 | 0 |
+
+*Sparsi achieved ~76% fewer tokens, ~53% lower average latency, and higher accuracy than a traditional agent.*
+
+---
+
 ### 1. Install the Library
 ```bash
 pip install sparsi-py
