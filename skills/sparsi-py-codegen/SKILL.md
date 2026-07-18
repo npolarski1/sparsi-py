@@ -25,6 +25,9 @@ The output must use `asyncio` and `pydantic`. The code must run correctly.
    - **Live API Keys:** Tests MUST use actual API keys (read from environment variables) for any third-party services (LLMs, APIs). Ensure your environment has the necessary `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc.
    - **Rate Limits:** Monitor logs for rate limit errors. If a data API hits a limit, do not autonomously change the API in code; report it to the user and suggest alternative providers.
    - **Token Monitoring:** Review the `--verbose` logs for token usage metrics from AI operations. If token usage is exceptionally high (e.g., >20k tokens per request for a single item), you must iteratively refactor the workflow code to chunk the data and process it via `map_over` before finalizing the script.
+   - **Semantic Verification (Hallucination Check):** After the workflow executes without crashing, critically review the final output. Compare the output against the raw test inputs you provided.
+     - Look for "Out-of-Context Hallucinations": Did the AI output include specific facts, code signatures, types, or assertions that were NOT present in the test input data?
+     - If the AI over-extrapolated, the prompts in your workflow are too loose. You must iteratively modify the prompt strings in `my_workflow.py` to add strict grounding constraints (e.g., "Base your answer STRICTLY on the provided text. Do NOT assume or guess definitions, types, or facts not visible in the input.") and re-test until the output is grounded.
    - If there are any errors or bugs, you must iteratively diagnose and fix them until the workflow runs successfully.
 5. Notify the user once validation is successful.
 
