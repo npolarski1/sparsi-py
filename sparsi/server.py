@@ -110,15 +110,19 @@ def run_dual_mode(name: str, builder_func: Callable[[], Builder], input_mapping:
     
     args = parser.parse_args()
 
-    if args.verbose:
-        import structlog
-        structlog.configure(
-            processors=[
-                structlog.processors.add_log_level,
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.dev.ConsoleRenderer(),
-            ]
-        )
+    import logging
+    import structlog
+
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ]
+    )
 
     if args.mcp:
         server = MCPServer(name)
