@@ -13,6 +13,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIBoolOp
 Base class for all dagor operators.
@@ -24,6 +26,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIClassifyMultiLabelOp
 Base class for all dagor operators.
@@ -35,6 +39,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIComputeOp
 Base class for all dagor operators.
@@ -74,6 +80,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIExtractStringSliceOp
 Base class for all dagor operators.
@@ -85,6 +93,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIParseNumberOp
 Base class for all dagor operators.
@@ -96,6 +106,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIRerankOp
 Base class for all dagor operators.
@@ -108,6 +120,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AIScoreOp
 Base class for all dagor operators.
@@ -119,6 +133,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ### AISummarizeOp
 Base class for all dagor operators.
@@ -130,6 +146,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ## Bool Ops
 
@@ -851,6 +869,8 @@ to support automatic field discovery.
 
 **Outputs:**
 - `result`: typing.Any
+- `usage_input_tokens`: typing.Any
+- `usage_output_tokens`: typing.Any
 
 ## Select Ops
 
